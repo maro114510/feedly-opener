@@ -6,6 +6,7 @@ const READ_LATER_PATTERNS = [
   /https:\/\/feedly\.com\/i\/board\/content\/user\/[^/]+\/tag\/global\.saved/i,
   /https:\/\/feedly\.com\/i\/read-later/i
 ];
+const READ_LATER_PATH_HINTS = ["/i/read-later", "/i/board/content/user/"];
 
 // Entries are rendered as article cards with multiple fallbacks.
 const ENTRY_SELECTORS = ["[data-entry-id]", "article", ".entry", ".entryRow"];
@@ -26,7 +27,16 @@ function delay(ms) {
 }
 
 function isReadLaterPage(url) {
-  return READ_LATER_PATTERNS.some((pattern) => pattern.test(url));
+  if (READ_LATER_PATTERNS.some((pattern) => pattern.test(url))) {
+    return true;
+  }
+
+  const path = location.pathname || "";
+  if (READ_LATER_PATH_HINTS.some((hint) => path.includes(hint))) {
+    return path.includes("global.saved");
+  }
+
+  return false;
 }
 
 function getEntryElements() {
@@ -71,18 +81,31 @@ function toOpenableUrl(href) {
   return url.toString();
 }
 
-function getEntriesWithUrls() {
+async function getSavedEntriesWithUrls(settings) {
   const entries = getEntryElements();
   const seen = new Set();
   const results = [];
+  const limit =
+    settings.mode === "count" ? Math.max(settings.count || 1, 1) : Infinity;
 
   for (const entry of entries) {
+    if (results.length >= limit) {
+      break;
+    }
     const url = getEntryLink(entry);
     if (!url || seen.has(url)) {
       continue;
     }
+
+    entry.scrollIntoView({ block: "center", inline: "center" });
+    await revealToolbar(entry);
+    const button = findUnsaveButton(entry);
+    if (!button) {
+      continue;
+    }
+
     seen.add(url);
-    results.push({ entry, url });
+    results.push({ entry, url, button });
   }
 
   return results;
@@ -179,12 +202,12 @@ function hasSecondaryClass(element) {
   return false;
 }
 
-async function unsaveEntry(entry) {
+async function unsaveEntry(entry, knownButton) {
   entry.scrollIntoView({ block: "center", inline: "center" });
   // Feedly reveals toolbar actions on hover. Simulate hover first.
   await revealToolbar(entry);
   await delay(120);
-  const button = findUnsaveButton(entry);
+  const button = knownButton || findUnsaveButton(entry);
   if (!button) {
     return false;
   }
@@ -304,7 +327,7 @@ function findScrollContainer(startNode) {
 }
 
 async function handleOpen(settings) {
-  if (!isReadLaterPage(location.href)) {
+  if (!(await waitForReadLaterPage(2000))) {
     return { ok: false, error: "This tab is not a Feedly Read Later page." };
   }
 
@@ -312,13 +335,10 @@ async function handleOpen(settings) {
     await loadAllEntries({ maxRounds: 30, idleThreshold: 3 });
   }
 
-  const entries = getEntriesWithUrls();
-  const targetCount =
-    settings.mode === "count" ? Math.max(settings.count || 1, 1) : entries.length;
-  const selected = entries.slice(0, targetCount);
+  const selected = await getSavedEntriesWithUrls(settings);
 
   for (const item of selected) {
-    await unsaveEntry(item.entry);
+    await unsaveEntry(item.entry, item.button);
   }
 
   if (settings.reload) {
@@ -332,6 +352,31 @@ async function handleOpen(settings) {
     urls: selected.map((item) => item.url),
     reloadScheduled: Boolean(settings.reload)
   };
+}
+
+async function waitForReadLaterPage(timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (isReadLaterPage(location.href) || hasReadLaterDom()) {
+      return true;
+    }
+    await delay(200);
+  }
+  return isReadLaterPage(location.href) || hasReadLaterDom();
+}
+
+function hasReadLaterDom() {
+  if (document.querySelector(".EntryMetadataReadLater")) {
+    return true;
+  }
+
+  const header = document.querySelector("h1");
+  if (header && /read later/i.test(header.textContent || "")) {
+    return true;
+  }
+
+  const label = document.querySelector(".EntryMetadataReadLater span");
+  return Boolean(label && /read later/i.test(label.textContent || ""));
 }
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
