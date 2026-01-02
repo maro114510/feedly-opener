@@ -1,13 +1,6 @@
 version: 2
+
 updates:
-  # - package-ecosystem: "gomod"
-  #   directory: "/"
-  #   schedule:
-  #     interval: "daily"
-  #   assignees:
-  #     - "maro114510"
-  #   cooldown:
-  #     default-days: 5
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
