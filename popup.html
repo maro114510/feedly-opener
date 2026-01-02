@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Feedly Read Later</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <h1 class="title">Feedly Read Later</h1>
+      <p class="subtitle">Open saved items in background tabs and unsave them.</p>
+
+      <section class="section">
+        <fieldset class="group">
+          <legend class="legend">Open mode</legend>
+          <label class="option">
+            <input type="radio" name="mode" value="all" />
+            Open all saved items
+          </label>
+          <label class="option">
+            <input type="radio" name="mode" value="count" />
+            Open only this many
+          </label>
+          <div class="count-row">
+            <input
+              id="count"
+              type="number"
+              min="1"
+              max="999"
+              inputmode="numeric"
+            />
+            <span class="count-label">items</span>
+          </div>
+        </fieldset>
+      </section>
+
+      <section class="section">
+        <label class="toggle">
+          <input type="checkbox" id="reload" />
+          Reload Read Later page after opening
+        </label>
+      </section>
+
+      <section class="section actions">
+        <button id="run" class="primary">Open and Unsave</button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

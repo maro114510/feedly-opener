@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Feedly Read Later Opener",
+  "version": "0.1.0",
+  "description": "Open Feedly Read Later items in background tabs and unsave them.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Feedly Read Later Opener"
+  },
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["https://feedly.com/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://feedly.com/i/board/content/user/*/tag/global.saved*",
+        "https://feedly.com/i/read-later*"
+      ],
+      "js": ["content.js"]
+    }
+  ]
+}
