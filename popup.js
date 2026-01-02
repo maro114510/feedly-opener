@@ -138,9 +138,9 @@ function applySettingsToForm(settings) {
 function updateCountDisabled(mode) {
   const disabled = mode !== "count";
   countInput.disabled = disabled;
-  const row = countInput.closest(".count-row");
-  if (row) {
-    row.style.opacity = disabled ? "0.5" : "1";
+  const inlineGroup = countInput.closest(".inline-count");
+  if (inlineGroup) {
+    inlineGroup.style.opacity = disabled ? "0.5" : "1";
   }
 }
 
