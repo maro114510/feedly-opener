@@ -1,0 +1,38 @@
+name: Dependabot auto-merge
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types:
+      - opened
+
+jobs:
+  dependabot-automation:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    timeout-minutes: 15
+
+    permissions:
+      pull-requests: write # need to approve/merge
+      contents: write # need to merge
+      issues: write # need to append label
+      repository-projects: write # need to change pull request title
+
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2.4.0
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Approve & enable auto-merge for Dependabot PR
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr edit "$PR_URL" -t "(auto merged) $PR_TITLE"
+          gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
