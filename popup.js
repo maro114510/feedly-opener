@@ -174,8 +174,11 @@ async function run() {
         settings
       });
     } catch (error) {
-      setStatus("Open a Feedly Read Later tab first.");
-      return;
+      response = await ensureContentScript(tab, settings);
+      if (!response) {
+        setStatus("Open a Feedly Read Later tab first.");
+        return;
+      }
     }
 
     if (!response || !response.ok) {
@@ -216,3 +219,42 @@ async function init() {
 }
 
 init();
+
+async function ensureContentScript(tab, settings) {
+  try {
+    await tabsExecuteScript(tab.id, "content.js");
+  } catch (error) {
+    return null;
+  }
+
+  await delay(100);
+  try {
+    return await tabsSendMessage(tab.id, { type: "FEEDLY_OPEN", settings });
+  } catch (error) {
+    return null;
+  }
+}
+
+function tabsExecuteScript(tabId, file) {
+  if (api.scripting && api.scripting.executeScript) {
+    return api.scripting.executeScript({
+      target: { tabId },
+      files: [file]
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    api.tabs.executeScript(tabId, { file }, () => {
+      const error = api.runtime && api.runtime.lastError;
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

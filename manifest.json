@@ -9,6 +9,12 @@
   },
   "permissions": ["storage", "tabs"],
   "host_permissions": ["https://feedly.com/*"],
+  "web_accessible_resources": [
+    {
+      "resources": ["content.js"],
+      "matches": ["https://feedly.com/*"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": [
