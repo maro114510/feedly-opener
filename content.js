@@ -7,6 +7,9 @@ const READ_LATER_PATTERNS = [
   /https:\/\/feedly\.com\/i\/read-later/i
 ];
 const READ_LATER_PATH_HINTS = ["/i/read-later", "/i/board/content/user/"];
+const READ_LATER_CACHE_MS = 3000;
+let lastReadLaterSeenAt = 0;
+let lastReadLaterUrl = "";
 
 // Entries are rendered as article cards with multiple fallbacks.
 const ENTRY_SELECTORS = ["[data-entry-id]", "article", ".entry", ".entryRow"];
@@ -27,16 +30,27 @@ function delay(ms) {
 }
 
 function isReadLaterPage(url) {
-  if (READ_LATER_PATTERNS.some((pattern) => pattern.test(url))) {
+  const candidateUrl = url || location.href;
+  if (READ_LATER_PATTERNS.some((pattern) => pattern.test(candidateUrl))) {
+    markReadLaterSeen(candidateUrl);
     return true;
   }
 
   const path = location.pathname || "";
   if (READ_LATER_PATH_HINTS.some((hint) => path.includes(hint))) {
-    return path.includes("global.saved");
+    const matches = path.includes("global.saved");
+    if (matches) {
+      markReadLaterSeen(candidateUrl);
+    }
+    return matches;
   }
 
-  return false;
+  if (hasReadLaterDom()) {
+    markReadLaterSeen(candidateUrl);
+    return true;
+  }
+
+  return isRecentlyReadLater();
 }
 
 function getEntryElements() {
@@ -357,12 +371,12 @@ async function handleOpen(settings) {
 async function waitForReadLaterPage(timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (isReadLaterPage(location.href) || hasReadLaterDom()) {
+    if (isReadLaterPage(location.href)) {
       return true;
     }
     await delay(200);
   }
-  return isReadLaterPage(location.href) || hasReadLaterDom();
+  return isReadLaterPage(location.href);
 }
 
 function hasReadLaterDom() {
@@ -379,11 +393,26 @@ function hasReadLaterDom() {
   return Boolean(label && /read later/i.test(label.textContent || ""));
 }
 
-api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== "FEEDLY_OPEN") {
+function markReadLaterSeen(url) {
+  lastReadLaterSeenAt = Date.now();
+  lastReadLaterUrl = url || location.href;
+}
+
+function isRecentlyReadLater() {
+  if (Date.now() - lastReadLaterSeenAt > READ_LATER_CACHE_MS) {
     return false;
   }
+  return location.origin === "https://feedly.com" && lastReadLaterUrl.length > 0;
+}
 
-  handleOpen(message.settings || {}).then(sendResponse);
-  return true;
-});
+if (!window.__feedlyReadLaterOpenerListenerAdded) {
+  window.__feedlyReadLaterOpenerListenerAdded = true;
+  api.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type !== "FEEDLY_OPEN") {
+      return false;
+    }
+
+    handleOpen(message.settings || {}).then(sendResponse);
+    return true;
+  });
+}
