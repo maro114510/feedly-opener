@@ -18,6 +18,73 @@ const countInput = $("#count");
 const reloadInput = $("#reload");
 const modeInputs = Array.from(document.querySelectorAll('input[name="mode"]'));
 
+// =============================================================================
+// Loading Manager
+// =============================================================================
+
+const LoadingManager = {
+  container: null,
+  spinner: null,
+  text: null,
+  hideTimeout: null,
+
+  init() {
+    this.container = $("#loading-container");
+    this.spinner = $("#spinner");
+    this.text = $("#loading-text");
+  },
+
+  show(message = "Processing...") {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
+    if (this.container) this.container.classList.add("active");
+    if (this.spinner) this.spinner.classList.remove("error", "success");
+    if (this.text) this.text.textContent = message;
+    if (runButton) runButton.classList.add("loading");
+  },
+
+  hide() {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
+    if (this.container) this.container.classList.remove("active");
+    if (runButton) runButton.classList.remove("loading");
+  },
+
+  showError(message = "Error") {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
+    if (this.spinner) {
+      this.spinner.classList.add("error");
+      this.spinner.classList.remove("success");
+    }
+    if (this.text) this.text.textContent = message;
+    this.hideTimeout = setTimeout(() => this.hide(), 2000);
+  },
+
+  showSuccess(message = "Done!") {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
+    if (this.spinner) {
+      this.spinner.classList.add("success");
+      this.spinner.classList.remove("error");
+    }
+    if (this.text) this.text.textContent = message;
+    this.hideTimeout = setTimeout(() => this.hide(), 1500);
+  }
+};
+
+// =============================================================================
+// Storage Functions
+// =============================================================================
+
 function storageGet(keys) {
   if (usesPromises) {
     return storageArea.get(keys);
@@ -103,6 +170,10 @@ function tabsCreate(createProperties) {
   });
 }
 
+// =============================================================================
+// UI Functions
+// =============================================================================
+
 function setStatus(message) {
   statusEl.textContent = message || "";
 }
@@ -153,9 +224,14 @@ async function saveSettings(settings) {
   await storageSet({ [SETTINGS_KEY]: settings });
 }
 
+// =============================================================================
+// Main Run Function
+// =============================================================================
+
 async function run() {
   setStatus("");
   runButton.disabled = true;
+  LoadingManager.show("Processing...");
 
   try {
     const settings = readSettingsFromForm();
@@ -164,6 +240,7 @@ async function run() {
     const [tab] = await tabsQuery({ active: true, currentWindow: true });
     if (!tab || !tab.id) {
       setStatus("No active tab found.");
+      LoadingManager.showError("No tab");
       return;
     }
 
@@ -177,18 +254,21 @@ async function run() {
       response = await ensureContentScript(tab, settings);
       if (!response) {
         setStatus("Open a Feedly Read Later tab first.");
+        LoadingManager.showError("Wrong page");
         return;
       }
     }
 
     if (!response || !response.ok) {
       setStatus(response?.error || "Not on Feedly Read Later page.");
+      LoadingManager.showError("Error");
       return;
     }
 
     const urls = response.urls || [];
     if (!urls.length) {
       setStatus("No saved items found.");
+      LoadingManager.hide();
       return;
     }
 
@@ -198,14 +278,22 @@ async function run() {
 
     const suffix = response.reloadScheduled ? " Reloading page." : "";
     setStatus(`Opened ${urls.length} tabs.${suffix}`);
+    LoadingManager.showSuccess(`${urls.length} opened`);
   } catch (error) {
     setStatus("Failed to open tabs. Please try again.");
+    LoadingManager.showError("Failed");
   } finally {
     runButton.disabled = false;
   }
 }
 
+// =============================================================================
+// Initialization
+// =============================================================================
+
 async function init() {
+  LoadingManager.init();
+
   const settings = await loadSettings();
   applySettingsToForm(settings);
 
@@ -219,6 +307,10 @@ async function init() {
 }
 
 init();
+
+// =============================================================================
+// Content Script Injection
+// =============================================================================
 
 async function ensureContentScript(tab, settings) {
   try {

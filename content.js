@@ -1,6 +1,10 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
 const usesPromises = typeof browser !== "undefined";
 
+// =============================================================================
+// Constants
+// =============================================================================
+
 // Feedly Read Later pages can vary by user id and legacy paths.
 const READ_LATER_PATTERNS = [
   /https:\/\/feedly\.com\/i\/board\/content\/user\/[^/]+\/tag\/global\.saved/i,
@@ -24,6 +28,10 @@ const READ_LATER_SELECTORS = [
   "a[role='button'] .InterestingMetadata__icon"
 ];
 const READ_LATER_LABELS = ["read later", "後で読む", "あとで読む"];
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -95,96 +103,9 @@ function toOpenableUrl(href) {
   return url.toString();
 }
 
-async function getSavedEntriesWithUrls(settings) {
-  const entries = getEntryElements();
-  const seen = new Set();
-  const results = [];
-  const limit =
-    settings.mode === "count" ? Math.max(settings.count || 1, 1) : Infinity;
-
-  for (const entry of entries) {
-    if (results.length >= limit) {
-      break;
-    }
-    const url = getEntryLink(entry);
-    if (!url || seen.has(url)) {
-      continue;
-    }
-
-    entry.scrollIntoView({ block: "center", inline: "center" });
-    await revealToolbar(entry);
-    const button = findUnsaveButton(entry);
-    if (!button) {
-      continue;
-    }
-
-    seen.add(url);
-    results.push({ entry, url, button });
-  }
-
-  return results;
-}
-
-function findUnsaveButton(entry) {
-  // Prefer toolbar bookmark icon when available (hover-only in Feedly UI).
-  const toolbarButtons = entry.querySelectorAll(TOOLBAR_BUTTON_SELECTOR);
-  for (const button of toolbarButtons) {
-    if (isSavedButton(button)) {
-      return button;
-    }
-  }
-
-  // Primary path: explicit Read Later button in metadata row.
-  const explicit = entry.querySelector(READ_LATER_SELECTORS.join(","));
-  if (explicit) {
-    const button = explicit.closest("a,button") || explicit;
-    return isSavedButton(button) ? button : null;
-  }
-
-  // Fallback: look for buttons that contain the Read Later label.
-  const candidates = entry.querySelectorAll("a[role='button'], button");
-  for (const candidate of candidates) {
-    if (!containsReadLaterText(candidate)) {
-      continue;
-    }
-    if (isSavedButton(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-function isSavedButton(button) {
-  // Be conservative: only click when we can confirm "saved" state to avoid re-saving.
-  const svg = button.querySelector("svg");
-  if (svg && hasSecondaryClass(svg)) {
-    return false;
-  }
-  if (svg && hasAccentClass(svg)) {
-    return true;
-  }
-  if (hasAccentClass(button)) {
-    return true;
-  }
-
-  const icon = button.querySelector("svg path[d]");
-  if (!icon) {
-    return false;
-  }
-
-  const d = icon.getAttribute("d") || "";
-  if (d.startsWith(BOOKMARK_ICON_UNSELECTED_PATH)) {
-    return false;
-  }
-
-  return d.startsWith(BOOKMARK_ICON_SELECTED_PATH);
-}
-
-function containsReadLaterText(element) {
-  const text = (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-  return READ_LATER_LABELS.some((label) => text.includes(label));
-}
+// =============================================================================
+// Save State Detection
+// =============================================================================
 
 function hasAccentClass(element) {
   const classAttr = element.getAttribute("class") || "";
@@ -216,9 +137,139 @@ function hasSecondaryClass(element) {
   return false;
 }
 
+function isSavedButton(button) {
+  const svg = button.querySelector("svg");
+  if (svg && hasSecondaryClass(svg)) {
+    return false;
+  }
+  if (svg && hasAccentClass(svg)) {
+    return true;
+  }
+  if (hasAccentClass(button)) {
+    return true;
+  }
+
+  const icon = button.querySelector("svg path[d]");
+  if (!icon) {
+    return false;
+  }
+
+  const d = icon.getAttribute("d") || "";
+  if (d.startsWith(BOOKMARK_ICON_UNSELECTED_PATH)) {
+    return false;
+  }
+
+  return d.startsWith(BOOKMARK_ICON_SELECTED_PATH);
+}
+
+function containsReadLaterText(element) {
+  const text = (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+  return READ_LATER_LABELS.some((label) => text.includes(label));
+}
+
+/**
+ * Quick pre-check if entry appears to be saved (before DOM operations).
+ * Returns true if saved, false if not saved, null if cannot determine.
+ */
+function quickCheckSaved(entry) {
+  const toolbarButton = entry.querySelector(TOOLBAR_BUTTON_SELECTOR);
+  if (toolbarButton) {
+    const svg = toolbarButton.querySelector("svg");
+    if (hasSecondaryClass(toolbarButton) || (svg && hasSecondaryClass(svg))) {
+      return false;
+    }
+    if (hasAccentClass(toolbarButton) || (svg && hasAccentClass(svg))) {
+      return true;
+    }
+  }
+
+  const metaButton = entry.querySelector(READ_LATER_SELECTORS.join(","));
+  if (metaButton) {
+    const btn = metaButton.closest("a,button") || metaButton;
+    const svg = btn.querySelector("svg");
+    if (hasSecondaryClass(btn) || (svg && hasSecondaryClass(svg))) {
+      return false;
+    }
+    if (hasAccentClass(btn) || (svg && hasAccentClass(svg))) {
+      return true;
+    }
+  }
+
+  return null;
+}
+
+// =============================================================================
+// Button Detection
+// =============================================================================
+
+function findUnsaveButton(entry) {
+  const toolbarButtons = entry.querySelectorAll(TOOLBAR_BUTTON_SELECTOR);
+  for (const button of toolbarButtons) {
+    if (isSavedButton(button)) {
+      return button;
+    }
+  }
+
+  const explicit = entry.querySelector(READ_LATER_SELECTORS.join(","));
+  if (explicit) {
+    const button = explicit.closest("a,button") || explicit;
+    return isSavedButton(button) ? button : null;
+  }
+
+  const candidates = entry.querySelectorAll("a[role='button'], button");
+  for (const candidate of candidates) {
+    if (!containsReadLaterText(candidate)) {
+      continue;
+    }
+    if (isSavedButton(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+// =============================================================================
+// Entry Processing
+// =============================================================================
+
+async function getSavedEntriesWithUrls(settings) {
+  const entries = getEntryElements();
+  const seen = new Set();
+  const results = [];
+  const limit =
+    settings.mode === "count" ? Math.max(settings.count || 1, 1) : Infinity;
+
+  for (const entry of entries) {
+    if (results.length >= limit) {
+      break;
+    }
+    const url = getEntryLink(entry);
+    if (!url || seen.has(url)) {
+      continue;
+    }
+
+    // Pre-check: skip entries that appear unsaved (before DOM operations)
+    if (quickCheckSaved(entry) === false) {
+      continue;
+    }
+
+    entry.scrollIntoView({ block: "center", inline: "center" });
+    await revealToolbar(entry);
+    const button = findUnsaveButton(entry);
+    if (!button) {
+      continue;
+    }
+
+    seen.add(url);
+    results.push({ entry, url, button });
+  }
+
+  return results;
+}
+
 async function unsaveEntry(entry, knownButton) {
   entry.scrollIntoView({ block: "center", inline: "center" });
-  // Feedly reveals toolbar actions on hover. Simulate hover first.
   await revealToolbar(entry);
   await delay(120);
   const button = knownButton || findUnsaveButton(entry);
@@ -250,6 +301,10 @@ async function revealToolbar(entry) {
 
   await delay(120);
 }
+
+// =============================================================================
+// Event Dispatching
+// =============================================================================
 
 function clickElement(element) {
   element.scrollIntoView({ block: "center", inline: "center" });
@@ -291,6 +346,10 @@ function activateAsButton(element) {
 
   element.click();
 }
+
+// =============================================================================
+// Infinite Scroll Loading
+// =============================================================================
 
 async function loadAllEntries({ maxRounds, idleThreshold }) {
   let idleRounds = 0;
@@ -339,6 +398,10 @@ function findScrollContainer(startNode) {
 
   return document.scrollingElement || document.documentElement || document.body;
 }
+
+// =============================================================================
+// Main Handler
+// =============================================================================
 
 async function handleOpen(settings) {
   if (!(await waitForReadLaterPage(2000))) {
@@ -404,6 +467,10 @@ function isRecentlyReadLater() {
   }
   return location.origin === "https://feedly.com" && lastReadLaterUrl.length > 0;
 }
+
+// =============================================================================
+// Message Listener
+// =============================================================================
 
 if (!window.__feedlyReadLaterOpenerListenerAdded) {
   window.__feedlyReadLaterOpenerListenerAdded = true;
