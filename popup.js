@@ -46,11 +46,19 @@ const LoadingManager = {
   },
 
   hide() {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
     if (this.container) this.container.classList.remove("active");
     if (runButton) runButton.classList.remove("loading");
   },
 
   showError(message = "Error") {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
     if (this.spinner) {
       this.spinner.classList.add("error");
       this.spinner.classList.remove("success");
@@ -60,6 +68,10 @@ const LoadingManager = {
   },
 
   showSuccess(message = "Done!") {
+    if (this.hideTimeout) {
+      clearTimeout(this.hideTimeout);
+      this.hideTimeout = null;
+    }
     if (this.spinner) {
       this.spinner.classList.add("success");
       this.spinner.classList.remove("error");
