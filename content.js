@@ -254,8 +254,6 @@ async function getSavedEntriesWithUrls(settings) {
       continue;
     }
 
-    entry.scrollIntoView({ block: "center", inline: "center" });
-    await revealToolbar(entry);
     const button = findUnsaveButton(entry);
     if (!button) {
       continue;
@@ -269,17 +267,12 @@ async function getSavedEntriesWithUrls(settings) {
 }
 
 async function unsaveEntry(entry, knownButton) {
-  entry.scrollIntoView({ block: "center", inline: "center" });
-  await revealToolbar(entry);
-  await delay(120);
   const button = knownButton || findUnsaveButton(entry);
   if (!button) {
     return false;
   }
   clickElement(button);
-  await delay(80);
-  activateAsButton(button);
-  await delay(120);
+  await delay(100);
   return true;
 }
 
@@ -307,8 +300,6 @@ async function revealToolbar(entry) {
 // =============================================================================
 
 function clickElement(element) {
-  element.scrollIntoView({ block: "center", inline: "center" });
-
   const mouseEvents = [
     "mouseover",
     "pointerdown",
