@@ -4,8 +4,7 @@ const usesPromises = typeof browser !== "undefined";
 const SETTINGS_KEY = "feedlyOpenerSettings";
 const DEFAULT_SETTINGS = {
   mode: "all",
-  count: 10,
-  reload: false
+  count: 10
 };
 
 const storageArea =
@@ -15,7 +14,6 @@ const $ = (selector) => document.querySelector(selector);
 const statusEl = $("#status");
 const runButton = $("#run");
 const countInput = $("#count");
-const reloadInput = $("#reload");
 const modeInputs = Array.from(document.querySelectorAll('input[name="mode"]'));
 
 // =============================================================================
@@ -192,8 +190,7 @@ function readSettingsFromForm() {
 
   return {
     mode,
-    count,
-    reload: reloadInput.checked
+    count
   };
 }
 
@@ -202,7 +199,6 @@ function applySettingsToForm(settings) {
     input.checked = input.value === settings.mode;
   });
   countInput.value = settings.count;
-  reloadInput.checked = settings.reload;
   updateCountDisabled(settings.mode);
 }
 
@@ -235,7 +231,6 @@ async function run() {
 
   try {
     const settings = readSettingsFromForm();
-    await saveSettings(settings);
 
     const [tab] = await tabsQuery({ active: true, currentWindow: true });
     if (!tab || !tab.id) {
@@ -276,8 +271,7 @@ async function run() {
       await tabsCreate({ url, active: false });
     }
 
-    const suffix = response.reloadScheduled ? " Reloading page." : "";
-    setStatus(`Opened ${urls.length} tabs.${suffix}`);
+    setStatus(`Opened ${urls.length} tabs. Reloading page.`);
     LoadingManager.showSuccess(`${urls.length} opened`);
   } catch (error) {
     setStatus("Failed to open tabs. Please try again.");
@@ -297,10 +291,16 @@ async function init() {
   const settings = await loadSettings();
   applySettingsToForm(settings);
 
+  // Save settings immediately when changed
   modeInputs.forEach((input) => {
     input.addEventListener("change", () => {
       updateCountDisabled(input.value);
+      saveSettings(readSettingsFromForm());
     });
+  });
+
+  countInput.addEventListener("change", () => {
+    saveSettings(readSettingsFromForm());
   });
 
   runButton.addEventListener("click", run);
