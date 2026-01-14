@@ -1,5 +1,10 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
-const usesPromises = typeof browser !== "undefined";
+
+// =============================================================================
+// API Constants
+// =============================================================================
+
+const FEEDLY_API_BASE = "https://api.feedly.com";
 
 // =============================================================================
 // Constants
@@ -35,6 +40,194 @@ const READ_LATER_LABELS = ["read later", "後で読む", "あとで読む"];
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Normalize count value to a positive integer.
+ * @param {number|undefined} count - Count value from settings
+ * @returns {number} Normalized count (minimum 1)
+ */
+function normalizeCount(count) {
+  return Math.max(count || 1, 1);
+}
+
+// =============================================================================
+// Feedly API Functions
+// =============================================================================
+
+// Token storage for communication between page and content script
+let cachedAccessToken = null;
+
+/**
+ * Clear the cached access token.
+ * Called when authentication fails to allow re-fetching from localStorage.
+ */
+function clearAccessTokenCache() {
+  cachedAccessToken = null;
+}
+
+/**
+ * Get access token from Feedly's localStorage.
+ * Token is stored in localStorage under "feedly.session" key.
+ * @returns {Promise<string|null>} Access token or null if not available
+ */
+async function getAccessToken() {
+  // Return cached token if available
+  if (cachedAccessToken) {
+    return cachedAccessToken;
+  }
+
+  try {
+    const sessionData = localStorage.getItem("feedly.session");
+    if (sessionData) {
+      const session = JSON.parse(sessionData);
+      if (session.feedlyToken) {
+        cachedAccessToken = session.feedlyToken;
+        return cachedAccessToken;
+      }
+    }
+  } catch (e) {
+    console.warn("[Feedly Opener] Failed to get token from localStorage:", e);
+  }
+
+  return null;
+}
+
+/**
+ * Make authenticated API request to Feedly.
+ * @param {string} endpoint - API endpoint path
+ * @param {Object} options - Fetch options
+ * @returns {Promise<Object>} Response JSON
+ */
+async function feedlyApiRequest(endpoint, options = {}) {
+  const token = await getAccessToken();
+  if (!token) {
+    throw new Error("No Feedly access token available");
+  }
+
+  const url = `${FEEDLY_API_BASE}${endpoint}`;
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...options.headers
+    }
+  });
+
+  if (!response.ok) {
+    // Clear token cache on authentication errors to allow retry with fresh token
+    if (response.status === 401 || response.status === 403) {
+      clearAccessTokenCache();
+    }
+    const errorText = await response.text().catch(() => "Unknown error");
+    throw new Error(`Feedly API error ${response.status}: ${errorText}`);
+  }
+
+  // DELETE requests may return empty body
+  if (response.status === 204 || response.headers.get("content-length") === "0") {
+    return { success: true };
+  }
+
+  return response.json();
+}
+
+/**
+ * Get current user's profile to extract userId.
+ * @returns {Promise<string>} User ID
+ */
+async function getUserId() {
+  const profile = await feedlyApiRequest("/v3/profile");
+  if (!profile.id) {
+    throw new Error("User ID not found in profile response");
+  }
+  return profile.id;
+}
+
+/**
+ * Fetch saved entries via Feedly API.
+ * @param {string} userId - User ID
+ * @param {number} count - Maximum number of entries to fetch
+ * @returns {Promise<Array>} Array of entry objects with id and url
+ */
+async function fetchSavedEntriesViaAPI(userId, count = 100) {
+  const streamId = encodeURIComponent(`user/${userId}/tag/global.saved`);
+  const response = await feedlyApiRequest(
+    `/v3/streams/contents?streamId=${streamId}&count=${count}&ranked=newest`
+  );
+
+  if (!response.items || !Array.isArray(response.items)) {
+    return [];
+  }
+
+  return response.items.map((item) => ({
+    id: item.id,
+    url: item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null,
+    title: item.title || "Untitled"
+  })).filter((item) => item.url);
+}
+
+/**
+ * Unsave entries via API (delete from Read Later).
+ * Feedly API requires individual DELETE requests per entry.
+ * @param {string} userId - User ID
+ * @param {Array<string>} entryIds - Array of entry IDs to unsave
+ * @returns {Promise<boolean>} Success status
+ */
+async function unsaveEntriesViaAPI(userId, entryIds) {
+  if (!entryIds || entryIds.length === 0) {
+    return true;
+  }
+
+  const tagId = encodeURIComponent(`user/${userId}/tag/global.saved`);
+
+  // Feedly API requires individual DELETE requests for each entry
+  for (const entryId of entryIds) {
+    await feedlyApiRequest(`/v3/tags/${tagId}/${encodeURIComponent(entryId)}`, {
+      method: "DELETE"
+    });
+  }
+  return true;
+}
+
+/**
+ * Main API-based handler for fetching and unsaving entries.
+ * @param {Object} settings - Settings object with mode and count
+ * @returns {Promise<Object>} Result object with ok, urls, and method
+ */
+async function handleOpenViaAPI(settings) {
+  const token = await getAccessToken();
+  if (!token) {
+    throw new Error("No access token available. Please ensure you are logged into Feedly.");
+  }
+
+  const userId = await getUserId();
+  const maxCount = settings.mode === "count" ? normalizeCount(settings.count) : 100;
+
+  const entries = await fetchSavedEntriesViaAPI(userId, maxCount);
+
+  if (entries.length === 0) {
+    return {
+      ok: true,
+      urls: [],
+      method: "api",
+      message: "No saved entries found"
+    };
+  }
+
+  // Limit entries based on settings
+  const entriesToProcess = settings.mode === "count"
+    ? entries.slice(0, settings.count || 1)
+    : entries;
+
+  const entryIds = entriesToProcess.map((e) => e.id);
+  await unsaveEntriesViaAPI(userId, entryIds);
+
+  return {
+    ok: true,
+    urls: entriesToProcess.map((e) => e.url),
+    method: "api"
+  };
 }
 
 function isReadLaterPage(url) {
@@ -238,7 +431,7 @@ async function getSavedEntriesWithUrls(settings) {
   const seen = new Set();
   const results = [];
   const limit =
-    settings.mode === "count" ? Math.max(settings.count || 1, 1) : Infinity;
+    settings.mode === "count" ? normalizeCount(settings.count) : Infinity;
 
   for (const entry of entries) {
     if (results.length >= limit) {
@@ -276,25 +469,6 @@ async function unsaveEntry(entry, knownButton) {
   return true;
 }
 
-async function revealToolbar(entry) {
-  const hoverTargets = [
-    entry,
-    entry.querySelector(".EntryMetadataWrapper"),
-    entry.querySelector(".EntryMetadataReadLater"),
-    entry.querySelector("div"),
-    entry.firstElementChild
-  ].filter(Boolean);
-
-  for (const target of hoverTargets) {
-    const mouseInit = { bubbles: true, cancelable: true, view: window };
-    target.dispatchEvent(new MouseEvent("mouseenter", mouseInit));
-    target.dispatchEvent(new MouseEvent("mouseover", mouseInit));
-    target.dispatchEvent(new MouseEvent("mousemove", mouseInit));
-  }
-
-  await delay(120);
-}
-
 // =============================================================================
 // Event Dispatching
 // =============================================================================
@@ -319,33 +493,14 @@ function clickElement(element) {
   }
 }
 
-function activateAsButton(element) {
-  element.focus({ preventScroll: true });
-
-  const keyEvents = ["keydown", "keyup"];
-  for (const key of ["Enter", " "]) {
-    for (const type of keyEvents) {
-      element.dispatchEvent(
-        new KeyboardEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          key
-        })
-      );
-    }
-  }
-
-  element.click();
-}
-
 // =============================================================================
 // Infinite Scroll Loading
 // =============================================================================
 
 async function loadAllEntries({ maxRounds, idleThreshold }) {
   let idleRounds = 0;
-  let lastCount = getEntryElements().length;
   const entries = getEntryElements();
+  let lastCount = entries.length;
   const scrollElement = entries.length
     ? findScrollContainer(entries[0])
     : document.scrollingElement || document.documentElement || document.body;
@@ -394,7 +549,13 @@ function findScrollContainer(startNode) {
 // Main Handler
 // =============================================================================
 
-async function handleOpen(settings) {
+/**
+ * DOM-based handler for fetching and unsaving entries.
+ * Used as fallback when API is unavailable.
+ * @param {Object} settings - Settings object with mode and count
+ * @returns {Promise<Object>} Result object
+ */
+async function handleOpenViaDOM(settings) {
   if (!(await waitForReadLaterPage(2000))) {
     return { ok: false, error: "This tab is not a Feedly Read Later page." };
   }
@@ -409,17 +570,55 @@ async function handleOpen(settings) {
     await unsaveEntry(item.entry, item.button);
   }
 
-  if (settings.reload) {
+  return {
+    ok: true,
+    urls: selected.map((item) => item.url),
+    method: "dom"
+  };
+}
+
+/**
+ * Main handler: tries API first, falls back to DOM on failure.
+ * @param {Object} settings - Settings object with mode and count
+ * @returns {Promise<Object>} Result object
+ */
+async function handleOpen(settings) {
+  let result;
+  let apiError = null;
+
+  // Try API-based approach first
+  try {
+    result = await handleOpenViaAPI(settings);
+  } catch (e) {
+    apiError = e;
+    console.warn("[Feedly Opener] API operation failed, falling back to DOM:", e.message);
+  }
+
+  // Fallback to DOM-based approach if API failed
+  if (!result || !result.ok) {
+    try {
+      result = await handleOpenViaDOM(settings);
+      if (apiError) {
+        result.apiError = apiError.message;
+      }
+    } catch (domError) {
+      console.error("[Feedly Opener] DOM operation also failed:", domError);
+      return {
+        ok: false,
+        error: `API error: ${apiError?.message || "unknown"}. DOM error: ${domError.message}`,
+        method: "failed"
+      };
+    }
+  }
+
+  // Always reload after successful operation to reflect UI changes
+  if (result.ok) {
     setTimeout(() => {
       location.reload();
     }, 1000);
   }
 
-  return {
-    ok: true,
-    urls: selected.map((item) => item.url),
-    reloadScheduled: Boolean(settings.reload)
-  };
+  return result;
 }
 
 async function waitForReadLaterPage(timeoutMs) {
