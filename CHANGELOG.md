@@ -11,8 +11,10 @@ Semantic Versioning.
 
 - Use Feedly API for fetching and unsaving entries (DOM as fallback)
 - Always reload page after successful operation
-- Save settings immediately on change
+- Save settings immediately on change (including real-time input)
 - Remove reload checkbox option (now automatic)
+- Use pagination for "all" mode to fetch entries beyond 100-item limit
+- Parallel batch DELETE requests for improved performance
 
 ### Removed
 
@@ -22,6 +24,8 @@ Semantic Versioning.
 ### Fixed
 
 - Token cache invalidation on authentication errors
+- Consistent use of `normalizeCount()` for count validation
+- Settings saved on input (not just on blur)
 
 ## [0.2.0] - 2026-01-06
 
