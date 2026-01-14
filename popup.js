@@ -299,7 +299,7 @@ async function init() {
     });
   });
 
-  countInput.addEventListener("change", () => {
+  countInput.addEventListener("input", () => {
     saveSettings(readSettingsFromForm());
   });
 

@@ -68,7 +68,12 @@ function clearAccessTokenCache() {
 
 /**
  * Get access token from Feedly's localStorage.
- * Token is stored in localStorage under "feedly.session" key.
+ *
+ * IMPLEMENTATION NOTE:
+ * Token is stored by Feedly web app in localStorage under "feedly.session" key.
+ * This is an undocumented implementation detail and may change in future Feedly updates.
+ * If token retrieval fails, the extension falls back to DOM-based operations.
+ *
  * @returns {Promise<string|null>} Access token or null if not available
  */
 async function getAccessToken() {
@@ -145,6 +150,22 @@ async function getUserId() {
 }
 
 /**
+ * Parse entry items from API response into normalized format.
+ * @param {Array} items - Raw items from API response
+ * @returns {Array} Array of entry objects with id and url
+ */
+function parseEntryItems(items) {
+  if (!items || !Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item) => ({
+    id: item.id,
+    url: item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null,
+    title: item.title || "Untitled"
+  })).filter((item) => item.url);
+}
+
+/**
  * Fetch saved entries via Feedly API.
  * @param {string} userId - User ID
  * @param {number} count - Maximum number of entries to fetch
@@ -155,21 +176,40 @@ async function fetchSavedEntriesViaAPI(userId, count = 100) {
   const response = await feedlyApiRequest(
     `/v3/streams/contents?streamId=${streamId}&count=${count}&ranked=newest`
   );
+  return parseEntryItems(response.items);
+}
 
-  if (!response.items || !Array.isArray(response.items)) {
-    return [];
-  }
+/**
+ * Fetch all saved entries via Feedly API using pagination.
+ * Uses continuation token to fetch entries beyond the 100-item limit.
+ * @param {string} userId - User ID
+ * @returns {Promise<Array>} Array of all entry objects with id and url
+ */
+async function fetchAllSavedEntriesViaAPI(userId) {
+  const allEntries = [];
+  let continuation = null;
+  const PAGE_SIZE = 100;
 
-  return response.items.map((item) => ({
-    id: item.id,
-    url: item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null,
-    title: item.title || "Untitled"
-  })).filter((item) => item.url);
+  do {
+    const streamId = encodeURIComponent(`user/${userId}/tag/global.saved`);
+    let url = `/v3/streams/contents?streamId=${streamId}&count=${PAGE_SIZE}&ranked=newest`;
+    if (continuation) {
+      url += `&continuation=${encodeURIComponent(continuation)}`;
+    }
+
+    const response = await feedlyApiRequest(url);
+    const entries = parseEntryItems(response.items);
+    allEntries.push(...entries);
+
+    continuation = response.continuation || null;
+  } while (continuation);
+
+  return allEntries;
 }
 
 /**
  * Unsave entries via API (delete from Read Later).
- * Feedly API requires individual DELETE requests per entry.
+ * Uses parallel batch processing to improve performance while respecting rate limits.
  * @param {string} userId - User ID
  * @param {Array<string>} entryIds - Array of entry IDs to unsave
  * @returns {Promise<boolean>} Success status
@@ -180,12 +220,18 @@ async function unsaveEntriesViaAPI(userId, entryIds) {
   }
 
   const tagId = encodeURIComponent(`user/${userId}/tag/global.saved`);
+  const BATCH_SIZE = 5;
 
-  // Feedly API requires individual DELETE requests for each entry
-  for (const entryId of entryIds) {
-    await feedlyApiRequest(`/v3/tags/${tagId}/${encodeURIComponent(entryId)}`, {
-      method: "DELETE"
-    });
+  // Process DELETE requests in parallel batches to balance speed and rate limiting
+  for (let i = 0; i < entryIds.length; i += BATCH_SIZE) {
+    const batch = entryIds.slice(i, i + BATCH_SIZE);
+    await Promise.all(
+      batch.map((entryId) =>
+        feedlyApiRequest(`/v3/tags/${tagId}/${encodeURIComponent(entryId)}`, {
+          method: "DELETE"
+        })
+      )
+    );
   }
   return true;
 }
@@ -202,9 +248,11 @@ async function handleOpenViaAPI(settings) {
   }
 
   const userId = await getUserId();
-  const maxCount = settings.mode === "count" ? normalizeCount(settings.count) : 100;
 
-  const entries = await fetchSavedEntriesViaAPI(userId, maxCount);
+  // Fetch entries: use pagination for "all" mode, single request for "count" mode
+  const entries = settings.mode === "all"
+    ? await fetchAllSavedEntriesViaAPI(userId)
+    : await fetchSavedEntriesViaAPI(userId, normalizeCount(settings.count));
 
   if (entries.length === 0) {
     return {
@@ -215,9 +263,9 @@ async function handleOpenViaAPI(settings) {
     };
   }
 
-  // Limit entries based on settings
+  // Limit entries based on settings (only needed for "count" mode as safeguard)
   const entriesToProcess = settings.mode === "count"
-    ? entries.slice(0, settings.count || 1)
+    ? entries.slice(0, normalizeCount(settings.count))
     : entries;
 
   const entryIds = entriesToProcess.map((e) => e.id);
