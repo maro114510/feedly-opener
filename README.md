@@ -6,8 +6,9 @@ Browser extension to open saved items from Feedly Read Later in background tabs 
 
 - Runs only on the Feedly Read Later page
 - Open all saved items or open a specified number
-- Optional reload after opening
+- Auto-reload after opening to reflect changes
 - Settings stored in browser storage
+- API-first approach with DOM fallback
 - No external libraries
 
 ## Requirements
@@ -33,8 +34,8 @@ Browser extension to open saved items from Feedly Read Later in background tabs 
 1. Open the Feedly Read Later page
 2. Click the extension icon
 3. Choose "Open all saved items" or "Open only this many"
-4. Optionally enable reload
-5. Click "Open and Unsave"
+4. Click "Open and unsave"
+5. Tabs open in background, page reloads automatically
 
 ## Notes
 
