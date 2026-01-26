@@ -17,16 +17,18 @@ const ErrorCode = {
   RATE_LIMITED: 'RATE_LIMITED',
   NETWORK_ERROR: 'NETWORK_ERROR',
   SERVER_ERROR: 'SERVER_ERROR',
+  CLIENT_ERROR: 'CLIENT_ERROR',
   WRONG_PAGE: 'WRONG_PAGE',
   UNKNOWN: 'UNKNOWN'
 };
 
 const UserMessages = {
   NO_TOKEN: "Please sign in to Feedly first.",
-  AUTH_FAILED: "Session expired. Please refresh the page.",
+  AUTH_FAILED: "Authentication failed. Please sign in to Feedly again.",
   RATE_LIMITED: "Too many requests. Please wait a moment.",
   NETWORK_ERROR: "Network error. Please check your connection.",
   SERVER_ERROR: "Feedly service is temporarily unavailable.",
+  CLIENT_ERROR: "Invalid request. Please try again.",
   WRONG_PAGE: "Please open a Feedly Read Later page.",
   UNKNOWN: "Something went wrong. Please try again."
 };
@@ -52,6 +54,7 @@ function classifyHttpError(status) {
   if (status === 401 || status === 403) return ErrorCode.AUTH_FAILED;
   if (status === 429) return ErrorCode.RATE_LIMITED;
   if (status >= 500) return ErrorCode.SERVER_ERROR;
+  if (status >= 400) return ErrorCode.CLIENT_ERROR;
   return ErrorCode.UNKNOWN;
 }
 
@@ -271,7 +274,7 @@ async function feedlyApiRequest(endpoint, options = {}) {
 async function getUserId() {
   const profile = await feedlyApiRequest("/v3/profile");
   if (!profile.id) {
-    throw new Error("User ID not found in profile response");
+    throw new FeedlyError(ErrorCode.SERVER_ERROR, "User ID not found in profile response");
   }
   return profile.id;
 }
@@ -780,15 +783,20 @@ async function handleOpen(settings) {
         console.error("[Feedly Opener] DOM failed:", domError.message);
       }
 
-      const userMessage = apiError instanceof FeedlyError
-        ? apiError.getUserMessage()
-        : UserMessages.UNKNOWN;
+      // Prioritize DOM WRONG_PAGE error as it's more actionable for users
+      let userMessage;
+      if (domError instanceof FeedlyError && domError.code === ErrorCode.WRONG_PAGE) {
+        userMessage = domError.getUserMessage();
+      } else if (apiError instanceof FeedlyError) {
+        userMessage = apiError.getUserMessage();
+      } else {
+        userMessage = UserMessages.UNKNOWN;
+      }
 
       return {
         ok: false,
         error: userMessage,
-        method: "failed",
-        errorCode: apiError instanceof FeedlyError ? apiError.code : ErrorCode.UNKNOWN
+        method: "failed"
       };
     }
   }
@@ -846,6 +854,9 @@ function isRecentlyReadLater() {
 
 /**
  * Validate message sender is from our own extension.
+ * NOTE: This is defense-in-depth. Messages via runtime.onMessage
+ * should only come from our extension, but we validate explicitly
+ * to ensure messages are from the expected source.
  * @param {Object} sender - Message sender object
  * @returns {boolean} True if sender is valid
  */
@@ -860,9 +871,12 @@ function validateSender(sender) {
  */
 function validateSettings(raw) {
   const validModes = ['all', 'count'];
+  const rawCount = Number(raw?.count);
+  const parsedCount = Number.isFinite(rawCount) ? Math.floor(rawCount) : 10;
+  const safeCount = parsedCount > 0 ? parsedCount : 10;
   return {
     mode: validModes.includes(raw?.mode) ? raw.mode : 'all',
-    count: Math.max(1, Math.min(999, Math.floor(Number(raw?.count)) || 10)),
+    count: Math.max(1, Math.min(999, safeCount)),
     reload: typeof raw?.reload === 'boolean' ? raw.reload : true
   };
 }
@@ -889,6 +903,7 @@ if (!window.__feedlyReadLaterOpenerListenerAdded) {
 
     handleOpen(settings)
       .then(sendResponse)
+      // Defensive catch for unexpected errors (normal flow returns result object)
       .catch((e) => {
         console.error("[Feedly Opener]", e);
         const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;

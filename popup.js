@@ -4,7 +4,8 @@ const usesPromises = typeof browser !== "undefined";
 const SETTINGS_KEY = "feedlyOpenerSettings";
 const DEFAULT_SETTINGS = {
   mode: "all",
-  count: 10
+  count: 10,
+  reload: true
 };
 
 const storageArea =
@@ -190,7 +191,8 @@ function readSettingsFromForm() {
 
   return {
     mode,
-    count
+    count,
+    reload: DEFAULT_SETTINGS.reload
   };
 }
 
