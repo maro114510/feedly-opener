@@ -122,7 +122,7 @@ function simpleHash(str) {
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
+    hash = hash | 0;  // Convert to 32-bit signed integer
   }
   return hash;
 }
@@ -254,7 +254,14 @@ async function feedlyApiRequest(endpoint, options = {}) {
     return { success: true };
   }
 
-  return response.json();
+  try {
+    return await response.json();
+  } catch (parseError) {
+    throw new FeedlyError(
+      ErrorCode.SERVER_ERROR,
+      `Invalid JSON response: ${parseError.message}`
+    );
+  }
 }
 
 /**
@@ -362,11 +369,7 @@ async function unsaveEntriesViaAPI(userId, entryIds) {
  * @returns {Promise<Object>} Result object with ok, urls, and method
  */
 async function handleOpenViaAPI(settings) {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new FeedlyError(ErrorCode.NO_TOKEN, 'No access token available');
-  }
-
+  // Token check is handled by feedlyApiRequest() called from getUserId()
   const userId = await getUserId();
 
   // Fetch entries: use pagination for "all" mode, single request for "count" mode
@@ -790,8 +793,8 @@ async function handleOpen(settings) {
     }
   }
 
-  // Always reload after successful operation to reflect UI changes
-  if (result.ok) {
+  // Reload after successful operation if enabled (default: true)
+  if (result.ok && settings.reload) {
     setTimeout(() => {
       location.reload();
     }, 1000);
