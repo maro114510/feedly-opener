@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to
 Semantic Versioning.
 
+## [0.3.1] - 2026-02-22
+
+### Changed
+
+- Improve error handling with structured `FeedlyError` and user-facing messages
+- Add token cache metadata with TTL and localStorage change detection
+- Add message sender validation and settings sanitization in content script
+- Respect `settings.reload` in successful operation flow
+- Bump GitHub Action `actions/checkout` from `6.0.1` to `6.0.2`
+
+### Fixed
+
+- Handle JSON parse failures from Feedly API responses
+- Classify 4xx API errors as client errors
+- Prioritize actionable `WRONG_PAGE` message when API and DOM flows both fail
+
 ## [0.3.0] - 2026-01-14
 
 ### Changed
