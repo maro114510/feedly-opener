@@ -5,6 +5,58 @@ const api = typeof browser !== "undefined" ? browser : chrome;
 // =============================================================================
 
 const FEEDLY_API_BASE = "https://api.feedly.com";
+const TOKEN_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+// =============================================================================
+// Error Handling
+// =============================================================================
+
+const ErrorCode = {
+  NO_TOKEN: 'NO_TOKEN',
+  AUTH_FAILED: 'AUTH_FAILED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  NETWORK_ERROR: 'NETWORK_ERROR',
+  SERVER_ERROR: 'SERVER_ERROR',
+  CLIENT_ERROR: 'CLIENT_ERROR',
+  WRONG_PAGE: 'WRONG_PAGE',
+  UNKNOWN: 'UNKNOWN'
+};
+
+const UserMessages = {
+  NO_TOKEN: "Please sign in to Feedly first.",
+  AUTH_FAILED: "Authentication failed. Please sign in to Feedly again.",
+  RATE_LIMITED: "Too many requests. Please wait a moment.",
+  NETWORK_ERROR: "Network error. Please check your connection.",
+  SERVER_ERROR: "Feedly service is temporarily unavailable.",
+  CLIENT_ERROR: "Invalid request. Please try again.",
+  WRONG_PAGE: "Please open a Feedly Read Later page.",
+  UNKNOWN: "Something went wrong. Please try again."
+};
+
+class FeedlyError extends Error {
+  constructor(code, technicalDetail) {
+    super(technicalDetail);
+    this.name = 'FeedlyError';
+    this.code = code;
+    this.userMessage = UserMessages[code] || UserMessages.UNKNOWN;
+  }
+
+  getUserMessage() {
+    return this.userMessage;
+  }
+
+  getDebugInfo() {
+    return `[${this.code}] ${this.message}`;
+  }
+}
+
+function classifyHttpError(status) {
+  if (status === 401 || status === 403) return ErrorCode.AUTH_FAILED;
+  if (status === 429) return ErrorCode.RATE_LIMITED;
+  if (status >= 500) return ErrorCode.SERVER_ERROR;
+  if (status >= 400) return ErrorCode.CLIENT_ERROR;
+  return ErrorCode.UNKNOWN;
+}
 
 // =============================================================================
 // Constants
@@ -55,15 +107,67 @@ function normalizeCount(count) {
 // Feedly API Functions
 // =============================================================================
 
-// Token storage for communication between page and content script
-let cachedAccessToken = null;
+// Token storage with metadata for TTL and change detection
+let tokenCache = {
+  token: null,
+  cachedAt: 0,
+  sourceHash: null
+};
+
+/**
+ * Generate a simple hash for change detection (djb2 algorithm).
+ * @param {string} str - String to hash
+ * @returns {number} Simple numeric hash
+ */
+function simpleHash(str) {
+  if (!str) return 0;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash | 0;  // Convert to 32-bit signed integer
+  }
+  return hash;
+}
+
+/**
+ * Check if cached token is still valid.
+ * Validates TTL expiration and localStorage data integrity.
+ * @returns {boolean} True if cache is valid
+ */
+function isTokenCacheValid() {
+  if (!tokenCache.token) {
+    return false;
+  }
+
+  // Check TTL expiration
+  if (Date.now() - tokenCache.cachedAt > TOKEN_CACHE_TTL_MS) {
+    return false;
+  }
+
+  // Validate against current localStorage
+  try {
+    const currentSessionData = localStorage.getItem("feedly.session");
+    if (simpleHash(currentSessionData) !== tokenCache.sourceHash) {
+      return false;
+    }
+  } catch (e) {
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Clear the cached access token.
  * Called when authentication fails to allow re-fetching from localStorage.
  */
 function clearAccessTokenCache() {
-  cachedAccessToken = null;
+  tokenCache = {
+    token: null,
+    cachedAt: 0,
+    sourceHash: null
+  };
 }
 
 /**
@@ -77,18 +181,25 @@ function clearAccessTokenCache() {
  * @returns {Promise<string|null>} Access token or null if not available
  */
 async function getAccessToken() {
-  // Return cached token if available
-  if (cachedAccessToken) {
-    return cachedAccessToken;
+  // Return cached token if still valid
+  if (isTokenCacheValid()) {
+    return tokenCache.token;
   }
+
+  // Clear expired/invalid cache
+  clearAccessTokenCache();
 
   try {
     const sessionData = localStorage.getItem("feedly.session");
     if (sessionData) {
       const session = JSON.parse(sessionData);
       if (session.feedlyToken) {
-        cachedAccessToken = session.feedlyToken;
-        return cachedAccessToken;
+        tokenCache = {
+          token: session.feedlyToken,
+          cachedAt: Date.now(),
+          sourceHash: simpleHash(sessionData)
+        };
+        return tokenCache.token;
       }
     }
   } catch (e) {
@@ -107,26 +218,38 @@ async function getAccessToken() {
 async function feedlyApiRequest(endpoint, options = {}) {
   const token = await getAccessToken();
   if (!token) {
-    throw new Error("No Feedly access token available");
+    throw new FeedlyError(ErrorCode.NO_TOKEN, 'No access token in localStorage');
   }
 
   const url = `${FEEDLY_API_BASE}${endpoint}`;
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...options.headers
-    }
-  });
+
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...options.headers
+      }
+    });
+  } catch (networkError) {
+    throw new FeedlyError(
+      ErrorCode.NETWORK_ERROR,
+      `Fetch failed: ${networkError.message}`
+    );
+  }
 
   if (!response.ok) {
     // Clear token cache on authentication errors to allow retry with fresh token
     if (response.status === 401 || response.status === 403) {
       clearAccessTokenCache();
     }
-    const errorText = await response.text().catch(() => "Unknown error");
-    throw new Error(`Feedly API error ${response.status}: ${errorText}`);
+    const errorBody = await response.text().catch(() => "");
+    throw new FeedlyError(
+      classifyHttpError(response.status),
+      `API ${response.status}: ${errorBody.substring(0, 200)}`
+    );
   }
 
   // DELETE requests may return empty body
@@ -134,7 +257,14 @@ async function feedlyApiRequest(endpoint, options = {}) {
     return { success: true };
   }
 
-  return response.json();
+  try {
+    return await response.json();
+  } catch (parseError) {
+    throw new FeedlyError(
+      ErrorCode.SERVER_ERROR,
+      `Invalid JSON response: ${parseError.message}`
+    );
+  }
 }
 
 /**
@@ -144,7 +274,7 @@ async function feedlyApiRequest(endpoint, options = {}) {
 async function getUserId() {
   const profile = await feedlyApiRequest("/v3/profile");
   if (!profile.id) {
-    throw new Error("User ID not found in profile response");
+    throw new FeedlyError(ErrorCode.SERVER_ERROR, "User ID not found in profile response");
   }
   return profile.id;
 }
@@ -242,11 +372,7 @@ async function unsaveEntriesViaAPI(userId, entryIds) {
  * @returns {Promise<Object>} Result object with ok, urls, and method
  */
 async function handleOpenViaAPI(settings) {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new Error("No access token available. Please ensure you are logged into Feedly.");
-  }
-
+  // Token check is handled by feedlyApiRequest() called from getUserId()
   const userId = await getUserId();
 
   // Fetch entries: use pagination for "all" mode, single request for "count" mode
@@ -605,7 +731,7 @@ function findScrollContainer(startNode) {
  */
 async function handleOpenViaDOM(settings) {
   if (!(await waitForReadLaterPage(2000))) {
-    return { ok: false, error: "This tab is not a Feedly Read Later page." };
+    throw new FeedlyError(ErrorCode.WRONG_PAGE, `Not on Read Later page: ${location.href}`);
   }
 
   if (settings.mode === "all") {
@@ -639,28 +765,44 @@ async function handleOpen(settings) {
     result = await handleOpenViaAPI(settings);
   } catch (e) {
     apiError = e;
-    console.warn("[Feedly Opener] API operation failed, falling back to DOM:", e.message);
+    if (e instanceof FeedlyError) {
+      console.warn("[Feedly Opener] API failed:", e.getDebugInfo());
+    } else {
+      console.warn("[Feedly Opener] API failed:", e.message);
+    }
   }
 
   // Fallback to DOM-based approach if API failed
   if (!result || !result.ok) {
     try {
       result = await handleOpenViaDOM(settings);
-      if (apiError) {
-        result.apiError = apiError.message;
-      }
     } catch (domError) {
-      console.error("[Feedly Opener] DOM operation also failed:", domError);
+      if (domError instanceof FeedlyError) {
+        console.error("[Feedly Opener] DOM failed:", domError.getDebugInfo());
+      } else {
+        console.error("[Feedly Opener] DOM failed:", domError.message);
+      }
+
+      // Prioritize DOM WRONG_PAGE error as it's more actionable for users
+      let userMessage;
+      if (domError instanceof FeedlyError && domError.code === ErrorCode.WRONG_PAGE) {
+        userMessage = domError.getUserMessage();
+      } else if (apiError instanceof FeedlyError) {
+        userMessage = apiError.getUserMessage();
+      } else {
+        userMessage = UserMessages.UNKNOWN;
+      }
+
       return {
         ok: false,
-        error: `API error: ${apiError?.message || "unknown"}. DOM error: ${domError.message}`,
+        error: userMessage,
         method: "failed"
       };
     }
   }
 
-  // Always reload after successful operation to reflect UI changes
-  if (result.ok) {
+  // Reload after successful operation if enabled (default: true)
+  if (result.ok && settings.reload) {
     setTimeout(() => {
       location.reload();
     }, 1000);
@@ -707,6 +849,39 @@ function isRecentlyReadLater() {
 }
 
 // =============================================================================
+// Message Security
+// =============================================================================
+
+/**
+ * Validate message sender is from our own extension.
+ * NOTE: This is defense-in-depth. Messages via runtime.onMessage
+ * should only come from our extension, but we validate explicitly
+ * to ensure messages are from the expected source.
+ * @param {Object} sender - Message sender object
+ * @returns {boolean} True if sender is valid
+ */
+function validateSender(sender) {
+  return sender && sender.id === api.runtime.id;
+}
+
+/**
+ * Validate and sanitize settings from message.
+ * @param {Object} raw - Raw settings object from message
+ * @returns {Object} Validated settings with safe defaults
+ */
+function validateSettings(raw) {
+  const validModes = ['all', 'count'];
+  const rawCount = Number(raw?.count);
+  const parsedCount = Number.isFinite(rawCount) ? Math.floor(rawCount) : 10;
+  const safeCount = parsedCount > 0 ? parsedCount : 10;
+  return {
+    mode: validModes.includes(raw?.mode) ? raw.mode : 'all',
+    count: Math.max(1, Math.min(999, safeCount)),
+    reload: typeof raw?.reload === 'boolean' ? raw.reload : true
+  };
+}
+
+// =============================================================================
 // Message Listener
 // =============================================================================
 
@@ -717,7 +892,23 @@ if (!window.__feedlyReadLaterOpenerListenerAdded) {
       return false;
     }
 
-    handleOpen(message.settings || {}).then(sendResponse);
+    // Validate sender is from our own extension
+    if (!validateSender(sender)) {
+      sendResponse({ ok: false, error: "Invalid message sender" });
+      return true;
+    }
+
+    // Validate and sanitize settings
+    const settings = validateSettings(message.settings);
+
+    handleOpen(settings)
+      .then(sendResponse)
+      // Defensive catch for unexpected errors (normal flow returns result object)
+      .catch((e) => {
+        console.error("[Feedly Opener]", e);
+        const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;
+        sendResponse({ ok: false, error: userMessage });
+      });
     return true;
   });
 }
