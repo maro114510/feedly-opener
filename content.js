@@ -114,6 +114,11 @@ let tokenCache = {
   sourceHash: null
 };
 
+// Pending unsave state held between FEEDLY_OPEN and FEEDLY_UNSAVE messages.
+// { type: "api", userId, entryIds, settings }
+// | { type: "dom", items: [{entry, url, button}], settings }
+let pendingUnsave = null;
+
 /**
  * Generate a simple hash for change detection (djb2 algorithm).
  * @param {string} str - String to hash
@@ -394,8 +399,12 @@ async function handleOpenViaAPI(settings) {
     ? entries.slice(0, normalizeCount(settings.count))
     : entries;
 
-  const entryIds = entriesToProcess.map((e) => e.id);
-  await unsaveEntriesViaAPI(userId, entryIds);
+  pendingUnsave = {
+    type: "api",
+    userId,
+    entryIds: entriesToProcess.map((e) => e.id),
+    settings
+  };
 
   return {
     ok: true,
@@ -740,8 +749,12 @@ async function handleOpenViaDOM(settings) {
 
   const selected = await getSavedEntriesWithUrls(settings);
 
-  for (const item of selected) {
-    await unsaveEntry(item.entry, item.button);
+  if (selected.length > 0) {
+    pendingUnsave = {
+      type: "dom",
+      items: selected,
+      settings
+    };
   }
 
   return {
@@ -801,14 +814,37 @@ async function handleOpen(settings) {
     }
   }
 
-  // Reload after successful operation if enabled (default: true)
-  if (result.ok && settings.reload) {
+  return result;
+}
+
+/**
+ * Execute the pending unsave and trigger page reload.
+ * Called by popup after all background tabs have been opened.
+ * @returns {Promise<Object>} Result object
+ */
+async function handleUnsave() {
+  if (!pendingUnsave) {
+    return { ok: false, error: "No pending unsave state" };
+  }
+
+  const pending = pendingUnsave;
+  pendingUnsave = null;
+
+  if (pending.type === "api") {
+    await unsaveEntriesViaAPI(pending.userId, pending.entryIds);
+  } else {
+    for (const item of pending.items) {
+      await unsaveEntry(item.entry, item.button);
+    }
+  }
+
+  if (pending.settings.reload) {
     setTimeout(() => {
       location.reload();
     }, 1000);
   }
 
-  return result;
+  return { ok: true };
 }
 
 async function waitForReadLaterPage(timeoutMs) {
@@ -888,27 +924,37 @@ function validateSettings(raw) {
 if (!window.__feedlyReadLaterOpenerListenerAdded) {
   window.__feedlyReadLaterOpenerListenerAdded = true;
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.type !== "FEEDLY_OPEN") {
-      return false;
-    }
-
-    // Validate sender is from our own extension
-    if (!validateSender(sender)) {
-      sendResponse({ ok: false, error: "Invalid message sender" });
+    if (message?.type === "FEEDLY_OPEN") {
+      if (!validateSender(sender)) {
+        sendResponse({ ok: false, error: "Invalid message sender" });
+        return true;
+      }
+      const settings = validateSettings(message.settings);
+      handleOpen(settings)
+        .then(sendResponse)
+        .catch((e) => {
+          console.error("[Feedly Opener]", e);
+          const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;
+          sendResponse({ ok: false, error: userMessage });
+        });
       return true;
     }
 
-    // Validate and sanitize settings
-    const settings = validateSettings(message.settings);
+    if (message?.type === "FEEDLY_UNSAVE") {
+      if (!validateSender(sender)) {
+        sendResponse({ ok: false, error: "Invalid message sender" });
+        return true;
+      }
+      handleUnsave()
+        .then(sendResponse)
+        .catch((e) => {
+          console.error("[Feedly Opener]", e);
+          const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;
+          sendResponse({ ok: false, error: userMessage });
+        });
+      return true;
+    }
 
-    handleOpen(settings)
-      .then(sendResponse)
-      // Defensive catch for unexpected errors (normal flow returns result object)
-      .catch((e) => {
-        console.error("[Feedly Opener]", e);
-        const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;
-        sendResponse({ ok: false, error: userMessage });
-      });
-    return true;
+    return false;
   });
 }
