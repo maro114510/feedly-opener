@@ -273,6 +273,21 @@ async function run() {
       await tabsCreate({ url, active: false });
     }
 
+    let unsaveResponse;
+    try {
+      unsaveResponse = await tabsSendMessage(tab.id, { type: "FEEDLY_UNSAVE" });
+    } catch (_) {
+      setStatus(`Opened ${urls.length} tabs, but failed to unsave. Please retry.`);
+      LoadingManager.showError("Unsave failed");
+      return;
+    }
+    if (!unsaveResponse || !unsaveResponse.ok) {
+      const errorMessage = unsaveResponse?.error || "unknown error";
+      setStatus(`Opened ${urls.length} tabs, but failed to unsave: ${errorMessage}. Please retry.`);
+      LoadingManager.showError("Unsave failed");
+      return;
+    }
+
     setStatus(`Opened ${urls.length} tabs. Reloading page.`);
     LoadingManager.showSuccess(`${urls.length} opened`);
   } catch (error) {
