@@ -273,10 +273,17 @@ async function run() {
       await tabsCreate({ url, active: false });
     }
 
+    let unsaveResponse;
     try {
-      await tabsSendMessage(tab.id, { type: "FEEDLY_UNSAVE" });
+      unsaveResponse = await tabsSendMessage(tab.id, { type: "FEEDLY_UNSAVE" });
     } catch (_) {
       setStatus(`Opened ${urls.length} tabs, but failed to unsave. Please retry.`);
+      LoadingManager.showError("Unsave failed");
+      return;
+    }
+    if (!unsaveResponse || !unsaveResponse.ok) {
+      const errorMessage = unsaveResponse?.error || "unknown error";
+      setStatus(`Opened ${urls.length} tabs, but failed to unsave: ${errorMessage}. Please retry.`);
       LoadingManager.showError("Unsave failed");
       return;
     }

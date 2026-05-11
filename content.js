@@ -19,6 +19,7 @@ const ErrorCode = {
   SERVER_ERROR: 'SERVER_ERROR',
   CLIENT_ERROR: 'CLIENT_ERROR',
   WRONG_PAGE: 'WRONG_PAGE',
+  DOM_CHANGED: 'DOM_CHANGED',
   UNKNOWN: 'UNKNOWN'
 };
 
@@ -30,6 +31,7 @@ const UserMessages = {
   SERVER_ERROR: "Feedly service is temporarily unavailable.",
   CLIENT_ERROR: "Invalid request. Please try again.",
   WRONG_PAGE: "Please open a Feedly Read Later page.",
+  DOM_CHANGED: "Feedly page changed before unsave. Please retry.",
   UNKNOWN: "Something went wrong. Please try again."
 };
 
@@ -749,13 +751,13 @@ async function handleOpenViaDOM(settings) {
 
   const selected = await getSavedEntriesWithUrls(settings);
 
-  if (selected.length > 0) {
-    pendingUnsave = {
+  pendingUnsave = selected.length > 0
+    ? {
       type: "dom",
       items: selected,
       settings
-    };
-  }
+    }
+    : null;
 
   return {
     ok: true,
@@ -834,6 +836,9 @@ async function handleUnsave() {
     await unsaveEntriesViaAPI(pending.userId, pending.entryIds);
   } else {
     for (const item of pending.items) {
+      if (item.button && !document.contains(item.button)) {
+        throw new FeedlyError(ErrorCode.DOM_CHANGED, "Saved item button was detached before unsave");
+      }
       await unsaveEntry(item.entry, item.button);
     }
   }

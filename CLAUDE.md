@@ -36,9 +36,10 @@ Runs in the popup window. Reads settings from `browser.storage.sync` (falls back
 2. Sends a `FEEDLY_OPEN` message to the content script in that tab
 3. If the content script isn't loaded (SPA navigation hasn't triggered injection), injects `content.js` via `scripting.executeScript` and retries
 4. Receives the list of URLs from the content script and opens each as a background tab
+5. Sends a follow-up `FEEDLY_UNSAVE` message to trigger the deferred unsave and page reload, surfacing an error if unsave fails
 
 **`content.js` (execution engine)**
-Injected into `feedly.com` Read Later pages. Handles the actual fetch-and-unsave logic. Listens for `FEEDLY_OPEN` messages, validates the sender ID and sanitizes settings, then runs `handleOpen()`.
+Injected into `feedly.com` Read Later pages. Handles the actual fetch-and-unsave logic. Listens for `FEEDLY_OPEN` messages that validate the sender, sanitize settings, and run `handleOpen()` to cache targets in `pendingUnsave`. It also listens for `FEEDLY_UNSAVE`, which runs `handleUnsave()` to perform the cached unsave and optional reload.
 
 ### API-first with DOM fallback
 
