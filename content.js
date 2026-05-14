@@ -772,6 +772,14 @@ async function handleOpenViaDOM(settings) {
  * @returns {Promise<Object>} Result object
  */
 async function handleOpen(settings) {
+  if (!isReadLaterPage(location.href)) {
+    return {
+      ok: false,
+      error: UserMessages.WRONG_PAGE,
+      method: "failed"
+    };
+  }
+
   let result;
   let apiError = null;
 
