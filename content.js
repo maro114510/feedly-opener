@@ -299,7 +299,7 @@ function parseEntryItems(items) {
     id: item.id,
     url: item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null,
     title: item.title || "Untitled"
-  })).filter((item) => item.url);
+  })).filter((item) => item.url && item.id);
 }
 
 /**
