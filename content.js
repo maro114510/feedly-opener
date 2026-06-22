@@ -297,7 +297,7 @@ function parseEntryItems(items) {
   }
   return items.map((item) => ({
     id: item.id,
-    url: item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null,
+    url: toOpenableUrl(item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null),
     title: item.title || "Untitled"
   })).filter((item) => item.url && item.id);
 }
