@@ -122,8 +122,8 @@ let tokenCache = {
 };
 
 // Pending unsave state held between FEEDLY_OPEN and FEEDLY_UNSAVE messages.
-// { type: "api", userId, entryIds, settings, expectedCount }
-// | { type: "dom", items: [{entry, url, button}], settings, expectedCount }
+// { type: "api", userId, entryIds, settings }
+// | { type: "dom", items: [{entry, url, button}], settings }
 let pendingUnsave = null;
 
 let snapshotPromise = null;
@@ -413,8 +413,7 @@ async function handleOpenViaAPI(settings) {
     type: "api",
     userId,
     entryIds: entriesToProcess.map((e) => e.id),
-    settings,
-    expectedCount: entriesToProcess.length
+    settings
   };
 
   return {
@@ -478,15 +477,16 @@ async function awaitSnapshot() {
 }
 
 function checkAtOpenStage(urlCount, settings) {
+  const requestedCount = normalizeCount(settings.count);
+  if (settings.mode === "count" && urlCount > requestedCount) {
+    return `Count mode: about to open ${urlCount} tabs but requested only ${requestedCount}. Please retry.`;
+  }
   if (!currentSnapshot || !isCacheFresh(currentSnapshot)) {
     return null;
   }
   const { total } = currentSnapshot;
   if (total < SNAPSHOT_MIN_TOTAL_FOR_CHECK) {
     return null;
-  }
-  if (settings.mode === "count" && urlCount > settings.count) {
-    return `Count mode: about to open ${urlCount} tabs but requested only ${settings.count}. Please retry.`;
   }
   if (settings.mode === "all") {
     if (urlCount < total * 0.5) {
@@ -495,19 +495,6 @@ function checkAtOpenStage(urlCount, settings) {
     if (urlCount > total * 2) {
       return `${urlCount} items found, significantly more than the ${total} items seen when you opened this page. Please reload and retry.`;
     }
-  }
-  return null;
-}
-
-function checkAtUnsaveStage(pending) {
-  if (typeof pending.expectedCount !== "number") {
-    return null;
-  }
-  const currentCount = pending.type === "api"
-    ? pending.entryIds.length
-    : pending.items.length;
-  if (currentCount !== pending.expectedCount) {
-    return `Data changed between open and unsave (expected ${pending.expectedCount}, found ${currentCount}). Please reload and retry.`;
   }
   return null;
 }
@@ -852,8 +839,7 @@ async function handleOpenViaDOM(settings) {
     ? {
       type: "dom",
       items: selected,
-      settings,
-      expectedCount: selected.length
+      settings
     }
     : null;
 
@@ -947,11 +933,6 @@ async function handleUnsave() {
 
   const pending = pendingUnsave;
   pendingUnsave = null;
-
-  const unsaveError = checkAtUnsaveStage(pending);
-  if (unsaveError) {
-    return { ok: false, error: unsaveError };
-  }
 
   if (pending.type === "api") {
     await unsaveEntriesViaAPI(pending.userId, pending.entryIds);
