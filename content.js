@@ -122,8 +122,8 @@ let tokenCache = {
 };
 
 // Pending unsave state held between FEEDLY_OPEN and FEEDLY_UNSAVE messages.
-// { type: "api", userId, entryIds, settings }
-// | { type: "dom", items: [{entry, url, button}], settings }
+// { type: "api", userId, targets: [{ id, url }], settings }
+// | { type: "dom", items: [{id, entry, url, button}], targets, settings }
 let pendingUnsave = null;
 
 let snapshotPromise = null;
@@ -399,6 +399,7 @@ async function handleOpenViaAPI(settings) {
     return {
       ok: true,
       urls: [],
+      targets: [],
       method: "api",
       message: "No saved entries found"
     };
@@ -408,17 +409,22 @@ async function handleOpenViaAPI(settings) {
   const entriesToProcess = settings.mode === "count"
     ? entries.slice(0, normalizeCount(settings.count))
     : entries;
+  const targets = entriesToProcess.map((entry) => ({
+    id: String(entry.id),
+    url: entry.url
+  }));
 
   pendingUnsave = {
     type: "api",
     userId,
-    entryIds: entriesToProcess.map((e) => e.id),
+    targets,
     settings
   };
 
   return {
     ok: true,
-    urls: entriesToProcess.map((e) => e.url),
+    urls: targets.map((target) => target.url),
+    targets,
     method: "api"
   };
 }
@@ -722,7 +728,7 @@ async function getSavedEntriesWithUrls(settings) {
     }
 
     seen.add(url);
-    results.push({ entry, url, button });
+    results.push({ id: url, entry, url, button });
   }
 
   return results;
@@ -835,17 +841,24 @@ async function handleOpenViaDOM(settings) {
 
   const selected = await getSavedEntriesWithUrls(settings);
 
+  const targets = selected.map((item) => ({
+    id: item.id,
+    url: item.url
+  }));
+
   pendingUnsave = selected.length > 0
     ? {
       type: "dom",
       items: selected,
+      targets,
       settings
     }
     : null;
 
   return {
     ok: true,
-    urls: selected.map((item) => item.url),
+    urls: targets.map((target) => target.url),
+    targets,
     method: "dom"
   };
 }
@@ -926,22 +939,39 @@ async function handleOpen(settings) {
  * Called by popup after all background tabs have been opened.
  * @returns {Promise<Object>} Result object
  */
-async function handleUnsave() {
+async function handleUnsave(verifiedTargetIds) {
   if (!pendingUnsave) {
     return { ok: false, error: "No pending unsave state" };
   }
 
   const pending = pendingUnsave;
   pendingUnsave = null;
+  const verifiedIds = new Set(
+    Array.isArray(verifiedTargetIds)
+      ? verifiedTargetIds.filter((id) => typeof id === "string")
+      : []
+  );
+  const verifiedTargets = pending.targets.filter((target) => verifiedIds.has(target.id));
+  let unsavedCount = 0;
+  let skippedCount = pending.targets.length - verifiedTargets.length;
 
   if (pending.type === "api") {
-    await unsaveEntriesViaAPI(pending.userId, pending.entryIds);
+    await unsaveEntriesViaAPI(
+      pending.userId,
+      verifiedTargets.map((target) => target.id)
+    );
+    unsavedCount = verifiedTargets.length;
   } else {
-    for (const item of pending.items) {
+    for (const item of pending.items.filter((item) => verifiedIds.has(item.id))) {
       if (item.button && !document.contains(item.button)) {
-        throw new FeedlyError(ErrorCode.DOM_CHANGED, "Saved item button was detached before unsave");
+        skippedCount += 1;
+        continue;
       }
-      await unsaveEntry(item.entry, item.button);
+      if (await unsaveEntry(item.entry, item.button)) {
+        unsavedCount += 1;
+      } else {
+        skippedCount += 1;
+      }
     }
   }
 
@@ -951,7 +981,11 @@ async function handleUnsave() {
     }, 1000);
   }
 
-  return { ok: true };
+  return {
+    ok: true,
+    unsavedCount,
+    skippedCount
+  };
 }
 
 async function waitForReadLaterPage(timeoutMs) {
@@ -1052,7 +1086,7 @@ if (!window.__feedlyReadLaterOpenerListenerAdded) {
         sendResponse({ ok: false, error: "Invalid message sender" });
         return true;
       }
-      handleUnsave()
+      handleUnsave(message.verifiedTargetIds)
         .then(sendResponse)
         .catch((e) => {
           console.error("[Feedly Opener]", e);

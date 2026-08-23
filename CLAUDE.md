@@ -35,8 +35,9 @@ Runs in the popup window. Reads settings from `browser.storage.sync` (falls back
 1. Queries the active tab
 2. Sends a `FEEDLY_OPEN` message to the content script in that tab
 3. If the content script isn't loaded (SPA navigation hasn't triggered injection), injects `content.js` via `scripting.executeScript` and retries
-4. Receives the list of URLs from the content script and opens each as a background tab
-5. Sends a follow-up `FEEDLY_UNSAVE` message to trigger the deferred unsave and page reload, surfacing an error if unsave fails
+4. Receives target IDs and URLs from the content script and opens each as a background tab
+5. Waits for each tab to reach `status: "complete"`, or marks it failed on navigation error, closure, or a 15-second timeout
+6. Sends a follow-up `FEEDLY_UNSAVE` message containing only verified target IDs to trigger the deferred unsave and page reload
 
 **`content.js` (execution engine)**
 Injected into `feedly.com` Read Later pages. Handles the actual fetch-and-unsave logic. Listens for `FEEDLY_OPEN` messages that validate the sender, sanitize settings, and run `handleOpen()` to cache targets in `pendingUnsave`. It also listens for `FEEDLY_UNSAVE`, which runs `handleUnsave()` to perform the cached unsave and optional reload.
@@ -82,9 +83,11 @@ When Feedly pushes a UI update, it is the DOM selectors and SVG paths that break
 
 Two-phase design prevents data loss:
 
-1. `FEEDLY_OPEN` — content script fetches entries, stores `pendingUnsave` in memory, returns `{ok, urls}` **without unsaving**
-2. Popup opens background tabs
-3. `FEEDLY_UNSAVE` — content script reads `pendingUnsave`, performs the actual unsave, triggers page reload
+1. `FEEDLY_OPEN` — content script fetches entries, stores `pendingUnsave` in memory, returns `{ok, urls, targets}` **without unsaving**
+2. Popup opens background tabs and verifies their top-level navigation
+3. `FEEDLY_UNSAVE` — popup sends only verified target IDs; the content script unsaves that subset and triggers page reload
+
+Failed, timed-out, or otherwise unverified targets are excluded from `FEEDLY_UNSAVE` and remain in Feedly Read Later.
 
 If tab opening fails, articles remain in Read Later (no data loss). If unsave fails after tabs open, the tabs are already open and the popup shows a retry message.
 

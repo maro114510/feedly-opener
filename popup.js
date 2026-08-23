@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   count: 10,
   reload: true
 };
+const TAB_LOAD_TIMEOUT_MS = 15000;
 
 const storageArea =
   api.storage && api.storage.sync ? api.storage.sync : api.storage.local;
@@ -177,6 +178,116 @@ function setStatus(message) {
   statusEl.textContent = message || "";
 }
 
+function formatVerificationStatus(verified, failed, pending) {
+  return `Verified: ${verified} · Failed: ${failed} · Pending: ${pending}`;
+}
+
+/**
+ * Wait for a created tab to finish its top-level navigation.
+ * A navigation error, tab removal, or timeout is never considered verified.
+ * @param {Object} tab - Tab returned by tabs.create
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+function waitForTabLoad(tab) {
+  return new Promise((resolve) => {
+    const tabId = tab?.id;
+    if (!Number.isInteger(tabId)) {
+      resolve({ ok: false, reason: "Tab creation returned no tab ID" });
+      return;
+    }
+
+    let settled = false;
+    let timeoutId;
+
+    const cleanup = () => {
+      api.tabs.onUpdated.removeListener(onUpdated);
+      api.tabs.onRemoved.removeListener(onRemoved);
+      if (api.webNavigation?.onErrorOccurred) {
+        api.webNavigation.onErrorOccurred.removeListener(onErrorOccurred);
+      }
+      clearTimeout(timeoutId);
+    };
+
+    const settle = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        settle({ ok: true });
+      }
+    };
+
+    const onRemoved = (removedTabId) => {
+      if (removedTabId === tabId) {
+        settle({ ok: false, reason: "Tab was closed before loading completed" });
+      }
+    };
+
+    const onErrorOccurred = (details) => {
+      if (details.tabId === tabId && details.frameId === 0) {
+        settle({ ok: false, reason: details.error || "Navigation failed" });
+      }
+    };
+
+    api.tabs.onUpdated.addListener(onUpdated);
+    api.tabs.onRemoved.addListener(onRemoved);
+    if (api.webNavigation?.onErrorOccurred) {
+      api.webNavigation.onErrorOccurred.addListener(onErrorOccurred);
+    }
+
+    timeoutId = setTimeout(() => {
+      settle({ ok: false, reason: "Tab loading timed out" });
+    }, TAB_LOAD_TIMEOUT_MS);
+
+    // A cached page can already be complete when tabs.create resolves.
+    if (tab.status === "complete") {
+      settle({ ok: true });
+    }
+  });
+}
+
+async function verifyTabs(openedTargets, initialFailedCount) {
+  let verified = 0;
+  let failed = initialFailedCount;
+  let pending = openedTargets.length;
+  const results = [];
+
+  const updateStatus = () => {
+    setStatus(formatVerificationStatus(verified, failed, pending));
+  };
+  updateStatus();
+
+  await Promise.all(
+    openedTargets.map(async ({ target, tab }) => {
+      const result = await waitForTabLoad(tab);
+      pending -= 1;
+      if (result.ok) {
+        verified += 1;
+        results.push({ target, ok: true });
+      } else {
+        failed += 1;
+        results.push({ target, ok: false, reason: result.reason });
+      }
+      updateStatus();
+    })
+  );
+
+  return {
+    verifiedTargetIds: results
+      .filter((result) => result.ok)
+      .map((result) => result.target.id),
+    verified,
+    failed,
+    pending
+  };
+}
+
 function clampCount(value) {
   if (!Number.isFinite(value)) {
     return DEFAULT_SETTINGS.count;
@@ -263,33 +374,60 @@ async function run() {
     }
 
     const urls = response.urls || [];
-    if (!urls.length) {
+    const targets = Array.isArray(response.targets) && response.targets.length
+      ? response.targets
+      : urls.map((url, index) => ({ id: String(index), url }));
+    if (!targets.length) {
       setStatus("No saved items found.");
       LoadingManager.hide();
       return;
     }
 
-    for (const url of urls) {
-      await tabsCreate({ url, active: false });
+    const openedTargets = [];
+    let initialFailedCount = 0;
+    for (const target of targets) {
+      try {
+        const tab = await tabsCreate({ url: target.url, active: false });
+        if (!Number.isInteger(tab?.id)) {
+          initialFailedCount += 1;
+          continue;
+        }
+        openedTargets.push({ target, tab });
+      } catch (_) {
+        initialFailedCount += 1;
+      }
     }
+
+    LoadingManager.show("Verifying tabs...");
+    const verification = await verifyTabs(openedTargets, initialFailedCount);
 
     let unsaveResponse;
     try {
-      unsaveResponse = await tabsSendMessage(tab.id, { type: "FEEDLY_UNSAVE" });
+      unsaveResponse = await tabsSendMessage(tab.id, {
+        type: "FEEDLY_UNSAVE",
+        verifiedTargetIds: verification.verifiedTargetIds
+      });
     } catch (_) {
-      setStatus(`Opened ${urls.length} tabs, but failed to unsave. Please retry.`);
+      setStatus(`${formatVerificationStatus(verification.verified, verification.failed, verification.pending)}. Failed to unsave. Please retry.`);
       LoadingManager.showError("Unsave failed");
       return;
     }
     if (!unsaveResponse || !unsaveResponse.ok) {
       const errorMessage = unsaveResponse?.error || "unknown error";
-      setStatus(`Opened ${urls.length} tabs, but failed to unsave: ${errorMessage}. Please retry.`);
+      setStatus(`${formatVerificationStatus(verification.verified, verification.failed, verification.pending)}. Failed to unsave: ${errorMessage}. Please retry.`);
       LoadingManager.showError("Unsave failed");
       return;
     }
 
-    setStatus(`Opened ${urls.length} tabs. Reloading page.`);
-    LoadingManager.showSuccess(`${urls.length} opened`);
+    const unsavedCount = Number.isInteger(unsaveResponse.unsavedCount)
+      ? unsaveResponse.unsavedCount
+      : verification.verified;
+    setStatus(`${formatVerificationStatus(verification.verified, verification.failed, verification.pending)}. Unsaved: ${unsavedCount}.`);
+    if (verification.failed > 0) {
+      LoadingManager.showError(`${verification.failed} failed`);
+    } else {
+      LoadingManager.showSuccess(`${unsavedCount} verified`);
+    }
   } catch (error) {
     setStatus("Failed to open tabs. Please try again.");
     LoadingManager.showError("Failed");
