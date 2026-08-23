@@ -74,11 +74,6 @@ const READ_LATER_CACHE_MS = 3000;
 let lastReadLaterSeenAt = 0;
 let lastReadLaterUrl = "";
 
-const SNAPSHOT_STORAGE_KEY = "feedlyOpenerSnapshot";
-const SNAPSHOT_TIMEOUT_MS = 15000;
-const SNAPSHOT_MAX_AGE_MS = 30 * 60 * 1000;
-const SNAPSHOT_MIN_TOTAL_FOR_CHECK = 10;
-
 // Entries are rendered as article cards with multiple fallbacks.
 const ENTRY_SELECTORS = ["[data-entry-id]", "article", ".entry", ".entryRow"];
 
@@ -125,9 +120,6 @@ let tokenCache = {
 // { type: "api", userId, targets: [{ id, url }], settings }
 // | { type: "dom", items: [{id, entry, url, button}], targets, settings }
 let pendingUnsave = null;
-
-let snapshotPromise = null;
-let currentSnapshot = null;
 
 /**
  * Generate a simple hash for change detection (djb2 algorithm).
@@ -427,82 +419,6 @@ async function handleOpenViaAPI(settings) {
     targets,
     method: "api"
   };
-}
-
-// =============================================================================
-// Snapshot Cache
-// =============================================================================
-
-function isCacheFresh(snapshot) {
-  if (!snapshot) return false;
-  return Date.now() - snapshot.builtAt < SNAPSHOT_MAX_AGE_MS;
-}
-
-async function buildSnapshotAsync() {
-  try {
-    const userId = await getUserId();
-    const entries = await fetchAllSavedEntriesViaAPI(userId);
-    const snapshot = {
-      entries: entries.map((e) => ({ id: e.id, url: e.url })),
-      total: entries.length,
-      builtAt: Date.now()
-    };
-    await api.storage.local.set({ [SNAPSHOT_STORAGE_KEY]: snapshot });
-    console.log(`[Feedly Opener] Snapshot built: ${snapshot.total} items`);
-    return snapshot;
-  } catch (e) {
-    console.warn("[Feedly Opener] Snapshot build failed:", e instanceof Error ? e.message : e);
-    return null;
-  }
-}
-
-function startSnapshotBuild() {
-  snapshotPromise = buildSnapshotAsync().then((snap) => {
-    currentSnapshot = snap;
-    return snap;
-  });
-}
-
-async function awaitSnapshot() {
-  if (!snapshotPromise || (currentSnapshot && !isCacheFresh(currentSnapshot))) {
-    startSnapshotBuild();
-  }
-  try {
-    const result = await Promise.race([
-      snapshotPromise,
-      new Promise((resolve) => setTimeout(() => resolve(null), SNAPSHOT_TIMEOUT_MS))
-    ]);
-    if (!result) {
-      console.warn("[Feedly Opener] Snapshot not ready within timeout, proceeding without check");
-    }
-    return result;
-  } catch (e) {
-    console.warn("[Feedly Opener] Snapshot await error:", e instanceof Error ? e.message : e);
-    return null;
-  }
-}
-
-function checkAtOpenStage(urlCount, settings) {
-  const requestedCount = normalizeCount(settings.count);
-  if (settings.mode === "count" && urlCount > requestedCount) {
-    return `Count mode: about to open ${urlCount} tabs but requested only ${requestedCount}. Please retry.`;
-  }
-  if (!currentSnapshot || !isCacheFresh(currentSnapshot)) {
-    return null;
-  }
-  const { total } = currentSnapshot;
-  if (total < SNAPSHOT_MIN_TOTAL_FOR_CHECK) {
-    return null;
-  }
-  if (settings.mode === "all") {
-    if (urlCount < total * 0.5) {
-      return `Only ${urlCount} items found, but your Read Later had ${total} items when you opened this page. The data may be incomplete. Please reload and retry.`;
-    }
-    if (urlCount > total * 2) {
-      return `${urlCount} items found, significantly more than the ${total} items seen when you opened this page. Please reload and retry.`;
-    }
-  }
-  return null;
 }
 
 function isReadLaterPage(url) {
@@ -877,8 +793,6 @@ async function handleOpen(settings) {
     };
   }
 
-  await awaitSnapshot();
-
   let result;
   let apiError = null;
 
@@ -920,14 +834,6 @@ async function handleOpen(settings) {
         error: userMessage,
         method: "failed"
       };
-    }
-  }
-
-  if (result.ok && result.urls.length > 0) {
-    const openError = checkAtOpenStage(result.urls.length, settings);
-    if (openError) {
-      pendingUnsave = null;
-      return { ok: false, error: openError, method: result.method };
     }
   }
 
@@ -1098,8 +1004,4 @@ if (!window.__feedlyReadLaterOpenerListenerAdded) {
 
     return false;
   });
-}
-
-if (isReadLaterPage(location.href)) {
-  startSnapshotBuild();
 }
