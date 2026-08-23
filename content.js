@@ -87,6 +87,15 @@ const READ_LATER_SELECTORS = [
   "a[role='button'] .InterestingMetadata__icon"
 ];
 const READ_LATER_LABELS = ["read later", "後で読む", "あとで読む"];
+const PAGE_SIZE = 100;
+const MAX_PAGINATION_PAGES = 1000;
+const MAX_CONTINUATION_LENGTH = 4096;
+
+const SavedState = Object.freeze({
+  SAVED: "saved",
+  UNSAVED: "unsaved",
+  UNKNOWN: "unknown"
+});
 
 // =============================================================================
 // Utility Functions
@@ -295,11 +304,47 @@ function parseEntryItems(items) {
   if (!items || !Array.isArray(items)) {
     return [];
   }
-  return items.map((item) => ({
-    id: item.id,
-    url: toOpenableUrl(item.alternate?.[0]?.href || item.canonicalUrl || item.originId || null),
-    title: item.title || "Untitled"
-  })).filter((item) => item.url && item.id);
+
+  return items.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return null;
+    }
+
+    const id = normalizeEntryId(item.id);
+    const urlCandidates = [];
+    if (Array.isArray(item.alternate)) {
+      for (const alternate of item.alternate) {
+        if (alternate && typeof alternate === "object") {
+          urlCandidates.push(alternate.href);
+        }
+      }
+    }
+    urlCandidates.push(item.canonicalUrl, item.originId);
+    const url = urlCandidates.map(toOpenableUrl).find(Boolean) || null;
+
+    if (!id || !url) {
+      return null;
+    }
+
+    return {
+      id,
+      url,
+      title: typeof item.title === "string" && item.title.trim()
+        ? item.title
+        : "Untitled"
+    };
+  }).filter(Boolean);
+}
+
+function normalizeEntryId(value) {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return null;
+  }
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+  const id = String(value).trim();
+  return id || null;
 }
 
 /**
@@ -313,7 +358,7 @@ async function fetchSavedEntriesViaAPI(userId, count = 100) {
   const response = await feedlyApiRequest(
     `/v3/streams/contents?streamId=${streamId}&count=${count}&ranked=newest`
   );
-  return parseEntryItems(response.items);
+  return parseEntryItems(response?.items);
 }
 
 /**
@@ -324,10 +369,20 @@ async function fetchSavedEntriesViaAPI(userId, count = 100) {
  */
 async function fetchAllSavedEntriesViaAPI(userId) {
   const allEntries = [];
+  const seenEntryIds = new Set();
+  const seenUrls = new Set();
+  const seenContinuations = new Set();
   let continuation = null;
-  const PAGE_SIZE = 100;
 
-  do {
+  for (let page = 0; page < MAX_PAGINATION_PAGES; page += 1) {
+    if (continuation !== null) {
+      if (!isValidContinuation(continuation) || seenContinuations.has(continuation)) {
+        console.warn("[Feedly Opener] Stopping pagination on invalid or repeated continuation token");
+        return allEntries;
+      }
+      seenContinuations.add(continuation);
+    }
+
     const streamId = encodeURIComponent(`user/${userId}/tag/global.saved`);
     let url = `/v3/streams/contents?streamId=${streamId}&count=${PAGE_SIZE}&ranked=newest`;
     if (continuation) {
@@ -335,13 +390,37 @@ async function fetchAllSavedEntriesViaAPI(userId) {
     }
 
     const response = await feedlyApiRequest(url);
-    const entries = parseEntryItems(response.items);
-    allEntries.push(...entries);
+    const entries = parseEntryItems(response?.items);
+    for (const entry of entries) {
+      if (seenEntryIds.has(entry.id) || seenUrls.has(entry.url)) {
+        continue;
+      }
+      seenEntryIds.add(entry.id);
+      seenUrls.add(entry.url);
+      allEntries.push(entry);
+    }
 
-    continuation = response.continuation || null;
-  } while (continuation);
+    const nextContinuation = response?.continuation;
+    if (nextContinuation === undefined || nextContinuation === null || nextContinuation === "") {
+      return allEntries;
+    }
+    if (!isValidContinuation(nextContinuation)) {
+      console.warn("[Feedly Opener] Stopping pagination on malformed continuation token");
+      return allEntries;
+    }
+    continuation = nextContinuation;
+  }
+
+  console.warn(`[Feedly Opener] Pagination stopped after ${MAX_PAGINATION_PAGES} pages`);
 
   return allEntries;
+}
+
+function isValidContinuation(value) {
+  return typeof value === "string" &&
+    value.length <= MAX_CONTINUATION_LENGTH &&
+    value.trim() === value &&
+    value.length > 0;
 }
 
 /**
@@ -463,23 +542,24 @@ function getEntryLink(entry) {
 }
 
 function toOpenableUrl(href) {
-  if (!href) {
+  if (typeof href !== "string" || !href.trim()) {
     return null;
   }
 
   let url;
   try {
-    url = new URL(href, location.href);
+    url = new URL(href.trim(), location.href);
   } catch (error) {
     return null;
   }
 
-  if (!["http:", "https:"].includes(url.protocol)) {
+  if (!["http:", "https:"].includes(url.protocol) ||
+      !url.hostname || url.username || url.password) {
     return null;
   }
 
   if (url.origin === location.origin) {
-    if (!url.pathname.startsWith("/i/entry/")) {
+    if (!/^\/i\/entry\/[^/]+/i.test(url.pathname)) {
       return null;
     }
   }
@@ -492,58 +572,64 @@ function toOpenableUrl(href) {
 // =============================================================================
 
 function hasAccentClass(element) {
-  const classAttr = element.getAttribute("class") || "";
-  if (classAttr.includes("color--accent")) {
-    return true;
-  }
-  if (element.classList) {
-    for (const className of element.classList) {
-      if (className.startsWith("color--accent")) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return hasClassPrefix(element, "color--accent");
 }
 
 function hasSecondaryClass(element) {
-  const classAttr = element.getAttribute("class") || "";
-  if (classAttr.includes("color--secondary")) {
-    return true;
+  return hasClassPrefix(element, "color--secondary");
+}
+
+function hasClassPrefix(element, prefix) {
+  if (!element) {
+    return false;
   }
+  const classAttr = typeof element.getAttribute === "function"
+    ? element.getAttribute("class") || ""
+    : "";
+  const classNames = classAttr.split(/\s+/).filter(Boolean);
   if (element.classList) {
-    for (const className of element.classList) {
-      if (className.startsWith("color--secondary")) {
-        return true;
-      }
+    classNames.push(...Array.from(element.classList));
+  }
+  return classNames.some((className) => className.startsWith(prefix));
+}
+
+function getSavedState(button) {
+  if (!button || typeof button.querySelector !== "function") {
+    return SavedState.UNKNOWN;
+  }
+
+  const svg = button.querySelector("svg");
+  const states = [];
+  const styledElements = [button, svg].filter(Boolean);
+  if (styledElements.some(hasSecondaryClass)) {
+    states.push(SavedState.UNSAVED);
+  }
+  if (styledElements.some(hasAccentClass)) {
+    states.push(SavedState.SAVED);
+  }
+
+  const paths = typeof button.querySelectorAll === "function"
+    ? Array.from(button.querySelectorAll("svg path[d]"))
+    : [];
+  for (const path of paths) {
+    const pathData = (path.getAttribute("d") || "").trim();
+    if (pathData.startsWith(BOOKMARK_ICON_UNSELECTED_PATH)) {
+      states.push(SavedState.UNSAVED);
+    }
+    if (pathData.startsWith(BOOKMARK_ICON_SELECTED_PATH)) {
+      states.push(SavedState.SAVED);
     }
   }
-  return false;
+
+  const uniqueStates = [...new Set(states)];
+  if (uniqueStates.length !== 1) {
+    return SavedState.UNKNOWN;
+  }
+  return uniqueStates[0];
 }
 
 function isSavedButton(button) {
-  const svg = button.querySelector("svg");
-  if (svg && hasSecondaryClass(svg)) {
-    return false;
-  }
-  if (svg && hasAccentClass(svg)) {
-    return true;
-  }
-  if (hasAccentClass(button)) {
-    return true;
-  }
-
-  const icon = button.querySelector("svg path[d]");
-  if (!icon) {
-    return false;
-  }
-
-  const d = icon.getAttribute("d") || "";
-  if (d.startsWith(BOOKMARK_ICON_UNSELECTED_PATH)) {
-    return false;
-  }
-
-  return d.startsWith(BOOKMARK_ICON_SELECTED_PATH);
+  return getSavedState(button) === SavedState.SAVED;
 }
 
 function containsReadLaterText(element) {
@@ -558,24 +644,18 @@ function containsReadLaterText(element) {
 function quickCheckSaved(entry) {
   const toolbarButton = entry.querySelector(TOOLBAR_BUTTON_SELECTOR);
   if (toolbarButton) {
-    const svg = toolbarButton.querySelector("svg");
-    if (hasSecondaryClass(toolbarButton) || (svg && hasSecondaryClass(svg))) {
-      return false;
-    }
-    if (hasAccentClass(toolbarButton) || (svg && hasAccentClass(svg))) {
-      return true;
+    const state = getSavedState(toolbarButton);
+    if (state !== SavedState.UNKNOWN) {
+      return state === SavedState.SAVED;
     }
   }
 
   const metaButton = entry.querySelector(READ_LATER_SELECTORS.join(","));
   if (metaButton) {
     const btn = metaButton.closest("a,button") || metaButton;
-    const svg = btn.querySelector("svg");
-    if (hasSecondaryClass(btn) || (svg && hasSecondaryClass(svg))) {
-      return false;
-    }
-    if (hasAccentClass(btn) || (svg && hasAccentClass(svg))) {
-      return true;
+    const state = getSavedState(btn);
+    if (state !== SavedState.UNKNOWN) {
+      return state === SavedState.SAVED;
     }
   }
 

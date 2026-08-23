@@ -182,6 +182,48 @@ function formatVerificationStatus(verified, failed, pending) {
   return `Verified: ${verified} · Failed: ${failed} · Pending: ${pending}`;
 }
 
+function isSupportedDestinationUrl(value) {
+  return Boolean(normalizeDestinationUrl(value));
+}
+
+function normalizeDestinationUrl(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:"].includes(url.protocol) ||
+        !url.hostname || url.username || url.password) {
+      return null;
+    }
+    return url.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeTargets(response) {
+  const candidates = Array.isArray(response?.targets) && response.targets.length
+    ? response.targets
+    : Array.isArray(response?.urls)
+      ? response.urls.map((url, index) => ({ id: String(index), url }))
+      : [];
+  const targets = [];
+  let invalidCount = 0;
+
+  for (const candidate of candidates) {
+    const url = normalizeDestinationUrl(candidate?.url);
+    if (!candidate || typeof candidate.id !== "string" ||
+        !candidate.id.trim() || !url) {
+      invalidCount += 1;
+      continue;
+    }
+    targets.push({ id: candidate.id, url });
+  }
+
+  return { targets, invalidCount };
+}
+
 /**
  * Wait for a created tab to finish its top-level navigation.
  * A navigation error, tab removal, or timeout is never considered verified.
@@ -373,18 +415,15 @@ async function run() {
       return;
     }
 
-    const urls = response.urls || [];
-    const targets = Array.isArray(response.targets) && response.targets.length
-      ? response.targets
-      : urls.map((url, index) => ({ id: String(index), url }));
+    const { targets, invalidCount } = normalizeTargets(response);
     if (!targets.length) {
-      setStatus("No saved items found.");
+      setStatus(invalidCount > 0 ? "No valid saved item destinations found." : "No saved items found.");
       LoadingManager.hide();
       return;
     }
 
     const openedTargets = [];
-    let initialFailedCount = 0;
+    let initialFailedCount = invalidCount;
     for (const target of targets) {
       try {
         const tab = await tabsCreate({ url: target.url, active: false });
