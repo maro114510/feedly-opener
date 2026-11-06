@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to
 Semantic Versioning.
 
+## [0.4.0] - 2026-11-06
+
+### Changed
+
+- Remove the `tabs` permission and declare `webNavigation`; update the privacy policy accordingly
+- Harden validation of external input
+- Bump GitHub Actions `actions/checkout` and `softprops/action-gh-release`
+
+### Fixed
+
+- Validate the URL scheme in the API path so only `http:` and `https:` URLs are opened
+- Unsave only items whose tabs were verified as loaded; failed or closed tabs stay in Read Later
+- Register tab-load listeners before creating tabs so fast-loading tabs are not missed
+- Verify tabs on main-frame `DOMContentLoaded` (or `complete`) and wait up to 30 seconds, so slow pages are no longer marked Failed
+
 ## [0.3.1] - 2026-02-22
 
 ### Changed
