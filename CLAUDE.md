@@ -36,7 +36,7 @@ Runs in the popup window. Reads settings from `browser.storage.sync` (falls back
 2. Sends a `FEEDLY_OPEN` message to the content script in that tab
 3. If the content script isn't loaded (SPA navigation hasn't triggered injection), injects `content.js` via `scripting.executeScript` and retries
 4. Receives target IDs and URLs from the content script and opens each as a background tab
-5. Waits for each tab to reach `status: "complete"`, or marks it failed on navigation error, closure, or a 15-second timeout
+5. Waits for each tab's main frame to finish parsing (`DOMContentLoaded`) or reach `status: "complete"`, or marks it failed on navigation error, closure, or a 30-second timeout
 6. Sends a follow-up `FEEDLY_UNSAVE` message containing only verified target IDs to trigger the deferred unsave and page reload
 
 **`content.js` (execution engine)**
