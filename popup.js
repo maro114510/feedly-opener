@@ -225,76 +225,92 @@ function normalizeTargets(response) {
 }
 
 /**
- * Wait for a created tab to finish its top-level navigation.
+ * Track top-level navigation results for tabs this run creates.
+ * Listeners are registered before any tab is created: a background tab can
+ * finish loading while later tabs are still being created, and an event that
+ * fires before a listener exists is lost for good.
  * A navigation error, tab removal, or timeout is never considered verified.
- * @param {Object} tab - Tab returned by tabs.create
- * @returns {Promise<{ok: boolean, reason?: string}>}
+ * The first outcome recorded for a tab wins.
+ * @returns {{wait: function(Object): Promise<{ok: boolean, reason?: string}>, dispose: function(): void}}
  */
-function waitForTabLoad(tab) {
-  return new Promise((resolve) => {
-    const tabId = tab?.id;
-    if (!Number.isInteger(tabId)) {
-      resolve({ ok: false, reason: "Tab creation returned no tab ID" });
+function createTabLoadTracker() {
+  const outcomes = new Map();
+  const waiters = new Map();
+  const timeoutIds = new Set();
+
+  const record = (tabId, result) => {
+    if (outcomes.has(tabId)) {
       return;
     }
+    outcomes.set(tabId, result);
+    const waiter = waiters.get(tabId);
+    if (waiter) {
+      waiters.delete(tabId);
+      waiter(result);
+    }
+  };
 
-    let settled = false;
-    let timeoutId;
+  const onUpdated = (tabId, changeInfo) => {
+    if (changeInfo.status === "complete") {
+      record(tabId, { ok: true });
+    }
+  };
 
-    const cleanup = () => {
+  const onRemoved = (tabId) => {
+    record(tabId, { ok: false, reason: "Tab was closed before loading completed" });
+  };
+
+  const onErrorOccurred = (details) => {
+    if (details.frameId === 0) {
+      record(details.tabId, { ok: false, reason: details.error || "Navigation failed" });
+    }
+  };
+
+  api.tabs.onUpdated.addListener(onUpdated);
+  api.tabs.onRemoved.addListener(onRemoved);
+  if (api.webNavigation?.onErrorOccurred) {
+    api.webNavigation.onErrorOccurred.addListener(onErrorOccurred);
+  }
+
+  return {
+    wait(tab) {
+      const tabId = tab?.id;
+      if (!Number.isInteger(tabId)) {
+        return Promise.resolve({ ok: false, reason: "Tab creation returned no tab ID" });
+      }
+      // A cached page can already be complete when tabs.create resolves.
+      if (tab.status === "complete") {
+        record(tabId, { ok: true });
+      }
+      if (outcomes.has(tabId)) {
+        return Promise.resolve(outcomes.get(tabId));
+      }
+      return new Promise((resolve) => {
+        const timeoutId = setTimeout(() => {
+          timeoutIds.delete(timeoutId);
+          record(tabId, { ok: false, reason: "Tab loading timed out" });
+        }, TAB_LOAD_TIMEOUT_MS);
+        timeoutIds.add(timeoutId);
+        waiters.set(tabId, (result) => {
+          clearTimeout(timeoutId);
+          timeoutIds.delete(timeoutId);
+          resolve(result);
+        });
+      });
+    },
+    dispose() {
       api.tabs.onUpdated.removeListener(onUpdated);
       api.tabs.onRemoved.removeListener(onRemoved);
       if (api.webNavigation?.onErrorOccurred) {
         api.webNavigation.onErrorOccurred.removeListener(onErrorOccurred);
       }
-      clearTimeout(timeoutId);
-    };
-
-    const settle = (result) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
-      resolve(result);
-    };
-
-    const onUpdated = (updatedTabId, changeInfo) => {
-      if (updatedTabId === tabId && changeInfo.status === "complete") {
-        settle({ ok: true });
-      }
-    };
-
-    const onRemoved = (removedTabId) => {
-      if (removedTabId === tabId) {
-        settle({ ok: false, reason: "Tab was closed before loading completed" });
-      }
-    };
-
-    const onErrorOccurred = (details) => {
-      if (details.tabId === tabId && details.frameId === 0) {
-        settle({ ok: false, reason: details.error || "Navigation failed" });
-      }
-    };
-
-    api.tabs.onUpdated.addListener(onUpdated);
-    api.tabs.onRemoved.addListener(onRemoved);
-    if (api.webNavigation?.onErrorOccurred) {
-      api.webNavigation.onErrorOccurred.addListener(onErrorOccurred);
+      timeoutIds.forEach(clearTimeout);
+      timeoutIds.clear();
     }
-
-    timeoutId = setTimeout(() => {
-      settle({ ok: false, reason: "Tab loading timed out" });
-    }, TAB_LOAD_TIMEOUT_MS);
-
-    // A cached page can already be complete when tabs.create resolves.
-    if (tab.status === "complete") {
-      settle({ ok: true });
-    }
-  });
+  };
 }
 
-async function verifyTabs(openedTargets, initialFailedCount) {
+async function verifyTabs(openedTargets, initialFailedCount, tracker) {
   let verified = 0;
   let failed = initialFailedCount;
   let pending = openedTargets.length;
@@ -307,7 +323,7 @@ async function verifyTabs(openedTargets, initialFailedCount) {
 
   await Promise.all(
     openedTargets.map(async ({ target, tab }) => {
-      const result = await waitForTabLoad(tab);
+      const result = await tracker.wait(tab);
       pending -= 1;
       if (result.ok) {
         verified += 1;
@@ -424,21 +440,27 @@ async function run() {
 
     const openedTargets = [];
     let initialFailedCount = invalidCount;
-    for (const target of targets) {
-      try {
-        const tab = await tabsCreate({ url: target.url, active: false });
-        if (!Number.isInteger(tab?.id)) {
+    let verification;
+    const tracker = createTabLoadTracker();
+    try {
+      for (const target of targets) {
+        try {
+          const tab = await tabsCreate({ url: target.url, active: false });
+          if (!Number.isInteger(tab?.id)) {
+            initialFailedCount += 1;
+            continue;
+          }
+          openedTargets.push({ target, tab });
+        } catch (_) {
           initialFailedCount += 1;
-          continue;
         }
-        openedTargets.push({ target, tab });
-      } catch (_) {
-        initialFailedCount += 1;
       }
-    }
 
-    LoadingManager.show("Verifying tabs...");
-    const verification = await verifyTabs(openedTargets, initialFailedCount);
+      LoadingManager.show("Verifying tabs...");
+      verification = await verifyTabs(openedTargets, initialFailedCount, tracker);
+    } finally {
+      tracker.dispose();
+    }
 
     let unsaveResponse;
     try {
