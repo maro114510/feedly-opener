@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS = {
   count: 10,
   reload: true
 };
-const TAB_LOAD_TIMEOUT_MS = 15000;
+const TAB_LOAD_TIMEOUT_MS = 30000;
 
 const storageArea =
   api.storage && api.storage.sync ? api.storage.sync : api.storage.local;
@@ -229,6 +229,9 @@ function normalizeTargets(response) {
  * Listeners are registered before any tab is created: a background tab can
  * finish loading while later tabs are still being created, and an event that
  * fires before a listener exists is lost for good.
+ * A tab is verified once its main frame finishes parsing (DOMContentLoaded)
+ * or reaches status "complete", whichever comes first: "complete" also waits
+ * for ads and trackers, which took 11 to 32 seconds for background tabs.
  * A navigation error, tab removal, or timeout is never considered verified.
  * The first outcome recorded for a tab wins.
  * @returns {{wait: function(Object): Promise<{ok: boolean, reason?: string}>, dispose: function(): void}}
@@ -260,6 +263,12 @@ function createTabLoadTracker() {
     record(tabId, { ok: false, reason: "Tab was closed before loading completed" });
   };
 
+  const onDOMContentLoaded = (details) => {
+    if (details.frameId === 0) {
+      record(details.tabId, { ok: true });
+    }
+  };
+
   const onErrorOccurred = (details) => {
     if (details.frameId === 0) {
       record(details.tabId, { ok: false, reason: details.error || "Navigation failed" });
@@ -268,6 +277,9 @@ function createTabLoadTracker() {
 
   api.tabs.onUpdated.addListener(onUpdated);
   api.tabs.onRemoved.addListener(onRemoved);
+  if (api.webNavigation?.onDOMContentLoaded) {
+    api.webNavigation.onDOMContentLoaded.addListener(onDOMContentLoaded);
+  }
   if (api.webNavigation?.onErrorOccurred) {
     api.webNavigation.onErrorOccurred.addListener(onErrorOccurred);
   }
@@ -301,6 +313,9 @@ function createTabLoadTracker() {
     dispose() {
       api.tabs.onUpdated.removeListener(onUpdated);
       api.tabs.onRemoved.removeListener(onRemoved);
+      if (api.webNavigation?.onDOMContentLoaded) {
+        api.webNavigation.onDOMContentLoaded.removeListener(onDOMContentLoaded);
+      }
       if (api.webNavigation?.onErrorOccurred) {
         api.webNavigation.onErrorOccurred.removeListener(onErrorOccurred);
       }

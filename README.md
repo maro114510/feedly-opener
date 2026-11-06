@@ -42,7 +42,7 @@ Browser extension to open saved items from Feedly Read Later in background tabs 
 ## Notes
 
 - Feedly is a SPA, so content scripts may not be injected immediately after navigation. The extension attempts a fallback injection.
-- A tab is considered verified when its top-level navigation reaches `complete`. Navigation errors, closed tabs, and tabs that take longer than 15 seconds remain saved.
+- A tab is considered verified when its top-level navigation finishes parsing (`DOMContentLoaded`) or reaches `complete`. Navigation errors, closed tabs, and tabs that take longer than 30 seconds remain saved.
 - Read Later toggling depends on Feedly DOM structure and may break if the UI changes.
 - If the same article keeps opening, the saved-state detection may not match the current DOM.
 
