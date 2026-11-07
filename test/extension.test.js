@@ -72,7 +72,7 @@ function loadContent() {
     getComputedStyle: () => ({ overflowY: "visible" }),
     setTimeout, clearTimeout
   };
-  vm.runInNewContext(`${contentSource}\n;globalThis.__test = { parseEntryItems, toOpenableUrl, validateSettings, handleUnsave, setPending(value) { pendingUnsave = value; } };`, context);
+  vm.runInNewContext(`${contentSource}\n;globalThis.__test = { parseEntryItems, toOpenableUrl, validateSettings, handleOpen, handleUnsave, setPending(value) { pendingUnsave = value; } };`, context);
   return { api, exported: context.__test };
 }
 
@@ -151,16 +151,10 @@ test("content input helpers parse HTTP entries and normalize settings", () => {
     { mode: "count", count: 999, reload: false });
 });
 
-test("unsave ignores IDs that were not pending", async () => {
+test("missing token returns the API error without creating targets", async () => {
   const { exported } = loadContent();
-  let clicks = 0;
-  const item = {
-    id: "pending", entry: { querySelectorAll: () => [] },
-    button: { querySelector: () => null, querySelectorAll: () => [], dispatchEvent: () => { clicks += 1; } }
-  };
-  exported.setPending({ type: "dom", items: [item], targets: [{ id: "pending", url: "https://example.com" }], settings: { reload: false } });
-  const result = await exported.handleUnsave(["not-pending"]);
-  assert.equal(result.unsavedCount, 0);
-  assert.equal(result.skippedCount, 1);
-  assert.equal(clicks, 0);
+  const result = await exported.handleOpen({ mode: "count", count: 1, reload: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "Please sign in to Feedly first.");
+  assert.equal(result.method, "failed");
 });
