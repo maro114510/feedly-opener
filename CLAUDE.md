@@ -100,4 +100,4 @@ If tab opening fails, articles remain in Read Later (no data loss). If unsave fa
 - No external libraries (minimizes attack surface and keeps the extension small)
 - DOM selectors must be conservative: prefer specificity over coverage to avoid accidentally toggling the wrong button
 - Batch size for parallel DELETE requests (`BATCH_SIZE = 5`) is chosen to balance throughput against Feedly API rate limits — do not increase without testing
-- `count` input is clamped to 1–999 in both popup (UI) and content script (`validateSettings`) — keep both in sync if the range changes
+- `count` input is clamped to 1–200 in both popup (UI) and content script — keep both in sync if the range changes

@@ -3,11 +3,15 @@ const usesPromises = typeof browser !== "undefined";
 
 const SETTINGS_KEY = "feedlyOpenerSettings";
 const DEFAULT_SETTINGS = {
-  mode: "all",
+  mode: "count",
   count: 10,
   reload: true
 };
 const TAB_LOAD_TIMEOUT_MS = 30000;
+const MAX_CONCURRENT_TAB_LOADS = 10;
+const TAB_BATCH_SIZE = 20;
+const MAX_ITEMS_PER_RUN = 200;
+const CONFIRMATION_THRESHOLD = 50;
 
 const storageArea =
   api.storage && api.storage.sync ? api.storage.sync : api.storage.local;
@@ -325,47 +329,11 @@ function createTabLoadTracker() {
   };
 }
 
-async function verifyTabs(openedTargets, initialFailedCount, tracker) {
-  let verified = 0;
-  let failed = initialFailedCount;
-  let pending = openedTargets.length;
-  const results = [];
-
-  const updateStatus = () => {
-    setStatus(formatVerificationStatus(verified, failed, pending));
-  };
-  updateStatus();
-
-  await Promise.all(
-    openedTargets.map(async ({ target, tab }) => {
-      const result = await tracker.wait(tab);
-      pending -= 1;
-      if (result.ok) {
-        verified += 1;
-        results.push({ target, ok: true });
-      } else {
-        failed += 1;
-        results.push({ target, ok: false, reason: result.reason });
-      }
-      updateStatus();
-    })
-  );
-
-  return {
-    verifiedTargetIds: results
-      .filter((result) => result.ok)
-      .map((result) => result.target.id),
-    verified,
-    failed,
-    pending
-  };
-}
-
 function clampCount(value) {
   if (!Number.isFinite(value)) {
     return DEFAULT_SETTINGS.count;
   }
-  return Math.min(Math.max(value, 1), 999);
+  return Math.min(Math.max(value, 1), MAX_ITEMS_PER_RUN);
 }
 
 function readSettingsFromForm() {
@@ -410,6 +378,63 @@ async function saveSettings(settings) {
 // Main Run Function
 // =============================================================================
 
+async function openAndVerifyTargets(targets, initialFailedCount, tracker) {
+  let verified = 0;
+  let failed = initialFailedCount;
+  let pending = targets.length;
+  const results = [];
+
+  const updateStatus = () => {
+    setStatus(formatVerificationStatus(verified, failed, pending));
+  };
+  updateStatus();
+
+  const processBatch = async (batch) => {
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < batch.length) {
+        const target = batch[nextIndex++];
+        let result;
+        try {
+          const tab = await tabsCreate({ url: target.url, active: false });
+          result = Number.isInteger(tab?.id)
+            ? await tracker.wait(tab)
+            : { ok: false, reason: "Tab creation returned no tab ID" };
+        } catch (_) {
+          result = { ok: false, reason: "Failed to create tab" };
+        }
+
+        pending -= 1;
+        if (result.ok) {
+          verified += 1;
+          results.push({ target, ok: true });
+        } else {
+          failed += 1;
+          results.push({ target, ok: false, reason: result.reason });
+        }
+        updateStatus();
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(MAX_CONCURRENT_TAB_LOADS, batch.length) }, worker)
+    );
+  };
+
+  for (let offset = 0; offset < targets.length; offset += TAB_BATCH_SIZE) {
+    await processBatch(targets.slice(offset, offset + TAB_BATCH_SIZE));
+  }
+
+  return {
+    verifiedTargetIds: results
+      .filter((result) => result.ok)
+      .map((result) => result.target.id),
+    verified,
+    failed,
+    pending
+  };
+}
+
 async function run() {
   setStatus("");
   runButton.disabled = true;
@@ -453,26 +478,19 @@ async function run() {
       return;
     }
 
-    const openedTargets = [];
+    if (targets.length > CONFIRMATION_THRESHOLD &&
+        !window.confirm(`Open and unsave ${targets.length} saved items?`)) {
+      setStatus("Operation cancelled.");
+      LoadingManager.hide();
+      return;
+    }
+
     let initialFailedCount = invalidCount;
     let verification;
     const tracker = createTabLoadTracker();
     try {
-      for (const target of targets) {
-        try {
-          const tab = await tabsCreate({ url: target.url, active: false });
-          if (!Number.isInteger(tab?.id)) {
-            initialFailedCount += 1;
-            continue;
-          }
-          openedTargets.push({ target, tab });
-        } catch (_) {
-          initialFailedCount += 1;
-        }
-      }
-
       LoadingManager.show("Verifying tabs...");
-      verification = await verifyTabs(openedTargets, initialFailedCount, tracker);
+      verification = await openAndVerifyTargets(targets, initialFailedCount, tracker);
     } finally {
       tracker.dispose();
     }
