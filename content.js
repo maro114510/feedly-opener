@@ -74,30 +74,10 @@ const READ_LATER_PATH_HINTS = ["/i/read-later", "/i/board/content/user/"];
 const READ_LATER_CACHE_MS = 3000;
 let lastReadLaterSeenAt = 0;
 let lastReadLaterUrl = "";
-
-// Entries are rendered as article cards with multiple fallbacks.
-const ENTRY_SELECTORS = ["[data-entry-id]", "article", ".entry", ".entryRow"];
-
-// SVG path data observed for saved/unsaved bookmark icons.
-const BOOKMARK_ICON_SELECTED_PATH = "M13.077 2.5H6.923";
-const BOOKMARK_ICON_UNSELECTED_PATH = "M13 2.357H7";
-const TOOLBAR_BUTTON_SELECTOR = "button.EntryToolbar__button";
-const READ_LATER_SELECTORS = [
-  ".EntryMetadataReadLater a[role='button']",
-  ".EntryMetadataReadLater button",
-  "a[role='button'] .InterestingMetadata__icon"
-];
-const READ_LATER_LABELS = ["read later", "後で読む", "あとで読む"];
 const PAGE_SIZE = 100;
 const MAX_PAGINATION_PAGES = 1000;
 const MAX_CONTINUATION_LENGTH = 4096;
 const MAX_ITEMS_PER_RUN = 200;
-
-const SavedState = Object.freeze({
-  SAVED: "saved",
-  UNSAVED: "unsaved",
-  UNKNOWN: "unknown"
-});
 
 // =============================================================================
 // Utility Functions
@@ -129,7 +109,6 @@ let tokenCache = {
 
 // Pending unsave state held between FEEDLY_OPEN and FEEDLY_UNSAVE messages.
 // { type: "api", opId, userId, targets: [{ id, url }], settings }
-// | { type: "dom", opId, items: [{id, entry, url, button}], targets, settings }
 let pendingUnsave = null;
 
 /**
@@ -323,7 +302,7 @@ function parseEntryItems(items) {
       }
     }
     urlCandidates.push(item.canonicalUrl, item.originId);
-    const url = urlCandidates.map(toOpenableUrl).find(Boolean) || null;
+    const url = urlCandidates.map(normalizeEntryUrl).find(Boolean) || null;
 
     if (!id || !url) {
       return null;
@@ -535,32 +514,10 @@ function isReadLaterPage(url) {
     return matches;
   }
 
-  if (hasReadLaterDom()) {
-    markReadLaterSeen(candidateUrl);
-    return true;
-  }
-
   return isRecentlyReadLater();
 }
 
-function getEntryElements() {
-  const selector = ENTRY_SELECTORS.join(",");
-  const candidates = Array.from(document.querySelectorAll(selector));
-  return candidates.filter((element) => getEntryLink(element));
-}
-
-function getEntryLink(entry) {
-  const anchors = Array.from(entry.querySelectorAll("a[href]"));
-  for (const anchor of anchors) {
-    const url = toOpenableUrl(anchor.getAttribute("href"));
-    if (url) {
-      return url;
-    }
-  }
-  return null;
-}
-
-function toOpenableUrl(href) {
+function normalizeEntryUrl(href) {
   if (typeof href !== "string" || !href.trim()) {
     return null;
   }
@@ -587,299 +544,11 @@ function toOpenableUrl(href) {
 }
 
 // =============================================================================
-// Save State Detection
-// =============================================================================
-
-function hasAccentClass(element) {
-  return hasClassPrefix(element, "color--accent");
-}
-
-function hasSecondaryClass(element) {
-  return hasClassPrefix(element, "color--secondary");
-}
-
-function hasClassPrefix(element, prefix) {
-  if (!element) {
-    return false;
-  }
-  const classAttr = typeof element.getAttribute === "function"
-    ? element.getAttribute("class") || ""
-    : "";
-  const classNames = classAttr.split(/\s+/).filter(Boolean);
-  if (element.classList) {
-    classNames.push(...Array.from(element.classList));
-  }
-  return classNames.some((className) => className.startsWith(prefix));
-}
-
-function getSavedState(button) {
-  if (!button || typeof button.querySelector !== "function") {
-    return SavedState.UNKNOWN;
-  }
-
-  const svg = button.querySelector("svg");
-  const states = [];
-  const styledElements = [button, svg].filter(Boolean);
-  if (styledElements.some(hasSecondaryClass)) {
-    states.push(SavedState.UNSAVED);
-  }
-  if (styledElements.some(hasAccentClass)) {
-    states.push(SavedState.SAVED);
-  }
-
-  const paths = typeof button.querySelectorAll === "function"
-    ? Array.from(button.querySelectorAll("svg path[d]"))
-    : [];
-  for (const path of paths) {
-    const pathData = (path.getAttribute("d") || "").trim();
-    if (pathData.startsWith(BOOKMARK_ICON_UNSELECTED_PATH)) {
-      states.push(SavedState.UNSAVED);
-    }
-    if (pathData.startsWith(BOOKMARK_ICON_SELECTED_PATH)) {
-      states.push(SavedState.SAVED);
-    }
-  }
-
-  const uniqueStates = [...new Set(states)];
-  if (uniqueStates.length !== 1) {
-    return SavedState.UNKNOWN;
-  }
-  return uniqueStates[0];
-}
-
-function isSavedButton(button) {
-  return getSavedState(button) === SavedState.SAVED;
-}
-
-function containsReadLaterText(element) {
-  const text = (element.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-  return READ_LATER_LABELS.some((label) => text.includes(label));
-}
-
-/**
- * Quick pre-check if entry appears to be saved (before DOM operations).
- * Returns true if saved, false if not saved, null if cannot determine.
- */
-function quickCheckSaved(entry) {
-  const toolbarButton = entry.querySelector(TOOLBAR_BUTTON_SELECTOR);
-  if (toolbarButton) {
-    const state = getSavedState(toolbarButton);
-    if (state !== SavedState.UNKNOWN) {
-      return state === SavedState.SAVED;
-    }
-  }
-
-  const metaButton = entry.querySelector(READ_LATER_SELECTORS.join(","));
-  if (metaButton) {
-    const btn = metaButton.closest("a,button") || metaButton;
-    const state = getSavedState(btn);
-    if (state !== SavedState.UNKNOWN) {
-      return state === SavedState.SAVED;
-    }
-  }
-
-  return null;
-}
-
-// =============================================================================
-// Button Detection
-// =============================================================================
-
-function findUnsaveButton(entry) {
-  const toolbarButtons = entry.querySelectorAll(TOOLBAR_BUTTON_SELECTOR);
-  for (const button of toolbarButtons) {
-    if (isSavedButton(button)) {
-      return button;
-    }
-  }
-
-  const explicit = entry.querySelector(READ_LATER_SELECTORS.join(","));
-  if (explicit) {
-    const button = explicit.closest("a,button") || explicit;
-    return isSavedButton(button) ? button : null;
-  }
-
-  const candidates = entry.querySelectorAll("a[role='button'], button");
-  for (const candidate of candidates) {
-    if (!containsReadLaterText(candidate)) {
-      continue;
-    }
-    if (isSavedButton(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-// =============================================================================
-// Entry Processing
-// =============================================================================
-
-async function getSavedEntriesWithUrls(settings) {
-  const entries = getEntryElements();
-  const seen = new Set();
-  const results = [];
-  const limit =
-    settings.mode === "count" ? normalizeCount(settings.count) : Infinity;
-
-  for (const entry of entries) {
-    if (results.length >= limit) {
-      break;
-    }
-    const url = getEntryLink(entry);
-    if (!url || seen.has(url)) {
-      continue;
-    }
-
-    // Pre-check: skip entries that appear unsaved (before DOM operations)
-    if (quickCheckSaved(entry) === false) {
-      continue;
-    }
-
-    const button = findUnsaveButton(entry);
-    if (!button) {
-      continue;
-    }
-
-    seen.add(url);
-    results.push({ id: url, entry, url, button });
-  }
-
-  return results;
-}
-
-async function unsaveEntry(entry, knownButton) {
-  const button = knownButton || findUnsaveButton(entry);
-  if (!button) {
-    return false;
-  }
-  clickElement(button);
-  await delay(100);
-  return true;
-}
-
-// =============================================================================
-// Event Dispatching
-// =============================================================================
-
-function clickElement(element) {
-  const mouseEvents = [
-    "mouseover",
-    "pointerdown",
-    "mousedown",
-    "pointerup",
-    "mouseup",
-    "click"
-  ];
-  for (const type of mouseEvents) {
-    element.dispatchEvent(
-      new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      })
-    );
-  }
-}
-
-// =============================================================================
-// Infinite Scroll Loading
-// =============================================================================
-
-async function loadAllEntries({ maxRounds, idleThreshold }) {
-  let idleRounds = 0;
-  const entries = getEntryElements();
-  let lastCount = entries.length;
-  const scrollElement = entries.length
-    ? findScrollContainer(entries[0])
-    : document.scrollingElement || document.documentElement || document.body;
-
-  for (let round = 0; round < maxRounds; round += 1) {
-    scrollElement.scrollTo({
-      top: scrollElement.scrollHeight,
-      behavior: "auto"
-    });
-    await delay(800);
-
-    const currentCount = getEntryElements().length;
-    if (currentCount <= lastCount) {
-      idleRounds += 1;
-    } else {
-      idleRounds = 0;
-    }
-
-    if (idleRounds >= idleThreshold) {
-      break;
-    }
-
-    lastCount = currentCount;
-  }
-}
-
-function findScrollContainer(startNode) {
-  let node = startNode;
-  while (node && node !== document.body) {
-    if (node instanceof HTMLElement) {
-      const style = getComputedStyle(node);
-      if (
-        /(auto|scroll)/.test(style.overflowY) &&
-        node.scrollHeight > node.clientHeight + 50
-      ) {
-        return node;
-      }
-    }
-    node = node.parentElement;
-  }
-
-  return document.scrollingElement || document.documentElement || document.body;
-}
-
-// =============================================================================
 // Main Handler
 // =============================================================================
 
 /**
- * DOM-based handler for fetching and unsaving entries.
- * Used as fallback when API is unavailable.
- * @param {Object} settings - Settings object with mode and count
- * @returns {Promise<Object>} Result object
- */
-async function handleOpenViaDOM(settings) {
-  if (!(await waitForReadLaterPage(2000))) {
-    throw new FeedlyError(ErrorCode.WRONG_PAGE, `Not on Read Later page: ${location.href}`);
-  }
-
-  if (settings.mode === "all") {
-    await loadAllEntries({ maxRounds: 30, idleThreshold: 3 });
-  }
-
-  const selected = await getSavedEntriesWithUrls(settings);
-
-  const targets = selected.map((item) => ({
-    id: item.id,
-    url: item.url
-  }));
-
-  pendingUnsave = selected.length > 0
-    ? {
-      type: "dom",
-      items: selected,
-      targets,
-      settings
-    }
-    : null;
-
-  return {
-    ok: true,
-    urls: targets.map((target) => target.url),
-    targets,
-    method: "dom"
-  };
-}
-
-/**
- * Main handler: tries API first, falls back to DOM on failure.
+ * Main API handler.
  * @param {Object} settings - Settings object with mode and count
  * @returns {Promise<Object>} Result object
  */
@@ -892,51 +561,17 @@ async function handleOpen(settings) {
     };
   }
 
-  let result;
-  let apiError = null;
-
-  // Try API-based approach first
   try {
-    result = await handleOpenViaAPI(settings);
+    return await handleOpenViaAPI(settings);
   } catch (e) {
-    apiError = e;
     if (e instanceof FeedlyError) {
       console.warn("[Feedly Opener] API failed:", e.getDebugInfo());
     } else {
-      console.warn("[Feedly Opener] API failed:", e.message);
+      console.warn("[Feedly Opener] API failed:", e?.message || e);
     }
+    const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;
+    return { ok: false, error: userMessage, method: "failed" };
   }
-
-  // Fallback to DOM-based approach if API failed
-  if (!result || !result.ok) {
-    try {
-      result = await handleOpenViaDOM(settings);
-    } catch (domError) {
-      if (domError instanceof FeedlyError) {
-        console.error("[Feedly Opener] DOM failed:", domError.getDebugInfo());
-      } else {
-        console.error("[Feedly Opener] DOM failed:", domError.message);
-      }
-
-      // Prioritize DOM WRONG_PAGE error as it's more actionable for users
-      let userMessage;
-      if (domError instanceof FeedlyError && domError.code === ErrorCode.WRONG_PAGE) {
-        userMessage = domError.getUserMessage();
-      } else if (apiError instanceof FeedlyError) {
-        userMessage = apiError.getUserMessage();
-      } else {
-        userMessage = UserMessages.UNKNOWN;
-      }
-
-      return {
-        ok: false,
-        error: userMessage,
-        method: "failed"
-      };
-    }
-  }
-
-  return result;
 }
 
 /**
@@ -974,21 +609,6 @@ async function handleUnsave(opId, verifiedTargetIds) {
       verifiedTargets.map((target) => target.id)
     ));
     unsavedCount = results.filter((result) => result.status === "unsaved").length;
-  } else {
-    for (const item of pending.items.filter((item) => verifiedIds.has(item.id))) {
-      if (item.button && !document.contains(item.button)) {
-        skippedCount += 1;
-        results.push({ id: item.id, status: "failed" });
-        continue;
-      }
-      if (await unsaveEntry(item.entry, item.button)) {
-        unsavedCount += 1;
-        results.push({ id: item.id, status: "unsaved" });
-      } else {
-        skippedCount += 1;
-        results.push({ id: item.id, status: "failed" });
-      }
-    }
   }
 
   if (pending.settings.reload && verifiedTargets.length > 0) {
@@ -1007,31 +627,6 @@ async function handleUnsave(opId, verifiedTargetIds) {
       .map((result) => result.id),
     results
   };
-}
-
-async function waitForReadLaterPage(timeoutMs) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (isReadLaterPage(location.href)) {
-      return true;
-    }
-    await delay(200);
-  }
-  return isReadLaterPage(location.href);
-}
-
-function hasReadLaterDom() {
-  if (document.querySelector(".EntryMetadataReadLater")) {
-    return true;
-  }
-
-  const header = document.querySelector("h1");
-  if (header && /read later/i.test(header.textContent || "")) {
-    return true;
-  }
-
-  const label = document.querySelector(".EntryMetadataReadLater span");
-  return Boolean(label && /read later/i.test(label.textContent || ""));
 }
 
 function markReadLaterSeen(url) {

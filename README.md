@@ -9,7 +9,7 @@ Browser extension to open saved items from Feedly Read Later in background tabs 
 - Verify each destination tab before removing the item from Read Later
 - Auto-reload after opening to reflect changes
 - Settings stored in browser storage
-- API-first approach with DOM fallback
+- API-only approach with clear errors when authentication is unavailable
 - No external libraries
 
 ## Requirements
