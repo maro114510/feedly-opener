@@ -108,7 +108,7 @@ let tokenCache = {
 };
 
 // Pending unsave state held between FEEDLY_OPEN and FEEDLY_UNSAVE messages.
-// { type: "api", userId, targets: [{ id, url }], settings }
+// { type: "api", opId, userId, targets: [{ id, url }], settings }
 let pendingUnsave = null;
 
 /**
@@ -579,9 +579,16 @@ async function handleOpen(settings) {
  * Called by popup after all background tabs have been opened.
  * @returns {Promise<Object>} Result object
  */
-async function handleUnsave(verifiedTargetIds) {
+async function handleUnsave(opId, verifiedTargetIds) {
+  if (Array.isArray(opId)) {
+    verifiedTargetIds = opId;
+    opId = pendingUnsave?.opId;
+  }
   if (!pendingUnsave) {
     return { ok: false, error: "No pending unsave state" };
+  }
+  if (pendingUnsave.opId !== opId) {
+    return { ok: false, error: "Stale operation" };
   }
 
   const pending = pendingUnsave;
@@ -679,9 +686,16 @@ if (!window.__feedlyReadLaterOpenerListenerAdded) {
         sendResponse({ ok: false, error: "Invalid message sender" });
         return true;
       }
+      if (typeof message.opId !== "string" || !message.opId) {
+        sendResponse({ ok: false, error: "Missing operation ID" });
+        return true;
+      }
       const settings = validateSettings(message.settings);
       handleOpen(settings)
-        .then(sendResponse)
+        .then((response) => {
+          if (response.ok && pendingUnsave) pendingUnsave.opId = message.opId;
+          sendResponse(response);
+        })
         .catch((e) => {
           console.error("[Feedly Opener]", e);
           const userMessage = e instanceof FeedlyError ? e.getUserMessage() : UserMessages.UNKNOWN;
@@ -695,7 +709,7 @@ if (!window.__feedlyReadLaterOpenerListenerAdded) {
         sendResponse({ ok: false, error: "Invalid message sender" });
         return true;
       }
-      handleUnsave(message.verifiedTargetIds)
+      handleUnsave(message.opId, message.verifiedTargetIds)
         .then(sendResponse)
         .catch((e) => {
           console.error("[Feedly Opener]", e);
