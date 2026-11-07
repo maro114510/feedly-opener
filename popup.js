@@ -511,9 +511,13 @@ async function run() {
     const unsavedCount = Number.isInteger(unsaveResponse.unsavedCount)
       ? unsaveResponse.unsavedCount
       : verification.verified;
-    setStatus(`${formatVerificationStatus(verification.verified, verification.failed, verification.pending)}. Unsaved: ${unsavedCount}.`);
-    if (verification.failed > 0) {
-      LoadingManager.showError(`${verification.failed} failed`);
+    const unsaveFailedCount = Number.isInteger(unsaveResponse.failedCount)
+      ? unsaveResponse.failedCount
+      : 0;
+    const failedCount = verification.failed + unsaveFailedCount;
+    setStatus(`${formatVerificationStatus(verification.verified, verification.failed, verification.pending)}. Unsaved: ${unsavedCount}. Failed: ${unsaveFailedCount}.`);
+    if (failedCount > 0) {
+      LoadingManager.showError(`${failedCount} failed`);
     } else {
       LoadingManager.showSuccess(`${unsavedCount} verified`);
     }

@@ -36,10 +36,11 @@ const UserMessages = {
 };
 
 class FeedlyError extends Error {
-  constructor(code, technicalDetail) {
+  constructor(code, technicalDetail, status = null) {
     super(technicalDetail);
     this.name = 'FeedlyError';
     this.code = code;
+    this.status = status;
     this.userMessage = UserMessages[code] || UserMessages.UNKNOWN;
   }
 
@@ -264,17 +265,18 @@ async function feedlyApiRequest(endpoint, options = {}) {
     const errorBody = await response.text().catch(() => "");
     throw new FeedlyError(
       classifyHttpError(response.status),
-      `API ${response.status}: ${errorBody.substring(0, 200)}`
+      `API ${response.status}: ${errorBody.substring(0, 200)}`,
+      response.status
     );
   }
 
-  // DELETE requests may return empty body
-  if (response.status === 204 || response.headers.get("content-length") === "0") {
+  const responseBody = await response.text();
+  if (!responseBody.trim()) {
     return { success: true };
   }
 
   try {
-    return await response.json();
+    return JSON.parse(responseBody);
   } catch (parseError) {
     throw new FeedlyError(
       ErrorCode.SERVER_ERROR,
@@ -428,28 +430,43 @@ function isValidContinuation(value) {
  * Uses parallel batch processing to improve performance while respecting rate limits.
  * @param {string} userId - User ID
  * @param {Array<string>} entryIds - Array of entry IDs to unsave
- * @returns {Promise<boolean>} Success status
+ * @returns {Promise<Array<{id: string, status: "unsaved"|"failed"}>>} Result per entry
  */
 async function unsaveEntriesViaAPI(userId, entryIds) {
   if (!entryIds || entryIds.length === 0) {
-    return true;
+    return [];
   }
 
   const tagId = encodeURIComponent(`user/${userId}/tag/global.saved`);
   const BATCH_SIZE = 5;
+  const allResults = [];
 
   // Process DELETE requests in parallel batches to balance speed and rate limiting
   for (let i = 0; i < entryIds.length; i += BATCH_SIZE) {
     const batch = entryIds.slice(i, i + BATCH_SIZE);
-    await Promise.all(
+    const results = await Promise.allSettled(
       batch.map((entryId) =>
         feedlyApiRequest(`/v3/tags/${tagId}/${encodeURIComponent(entryId)}`, {
           method: "DELETE"
-        })
+        }).then(() => ({ id: entryId, status: "unsaved" }))
       )
     );
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
+      if (result.status === "fulfilled") {
+        allResults.push(result.value);
+      } else {
+        const entryId = batch[index];
+        allResults.push({
+          id: entryId,
+          status: result.reason?.status === 404 || result.reason?.status === 410
+            ? "unsaved"
+            : "failed"
+        });
+      }
+    }
   }
-  return true;
+  return allResults;
 }
 
 /**
@@ -940,28 +957,32 @@ async function handleUnsave(verifiedTargetIds) {
   const verifiedTargets = pending.targets.filter((target) => verifiedIds.has(target.id));
   let unsavedCount = 0;
   let skippedCount = pending.targets.length - verifiedTargets.length;
+  const results = [];
 
-  if (pending.type === "api") {
-    await unsaveEntriesViaAPI(
+  if (pending.type === "api" && verifiedTargets.length > 0) {
+    results.push(...await unsaveEntriesViaAPI(
       pending.userId,
       verifiedTargets.map((target) => target.id)
-    );
-    unsavedCount = verifiedTargets.length;
+    ));
+    unsavedCount = results.filter((result) => result.status === "unsaved").length;
   } else {
     for (const item of pending.items.filter((item) => verifiedIds.has(item.id))) {
       if (item.button && !document.contains(item.button)) {
         skippedCount += 1;
+        results.push({ id: item.id, status: "failed" });
         continue;
       }
       if (await unsaveEntry(item.entry, item.button)) {
         unsavedCount += 1;
+        results.push({ id: item.id, status: "unsaved" });
       } else {
         skippedCount += 1;
+        results.push({ id: item.id, status: "failed" });
       }
     }
   }
 
-  if (pending.settings.reload) {
+  if (pending.settings.reload && verifiedTargets.length > 0) {
     setTimeout(() => {
       location.reload();
     }, 1000);
@@ -970,7 +991,12 @@ async function handleUnsave(verifiedTargetIds) {
   return {
     ok: true,
     unsavedCount,
-    skippedCount
+    skippedCount,
+    failedCount: results.filter((result) => result.status === "failed").length,
+    failedIds: results
+      .filter((result) => result.status === "failed")
+      .map((result) => result.id),
+    results
   };
 }
 
