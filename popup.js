@@ -399,7 +399,20 @@ function updateCountDisabled(mode) {
 
 async function loadSettings() {
   const stored = await storageGet(SETTINGS_KEY);
-  return { ...DEFAULT_SETTINGS, ...(stored[SETTINGS_KEY] || {}) };
+  const storedSettings = stored?.[SETTINGS_KEY] || {};
+  const mode = ["all", "count"].includes(storedSettings.mode)
+    ? storedSettings.mode
+    : DEFAULT_SETTINGS.mode;
+  const parsedCount = Number.parseInt(storedSettings.count, 10);
+  const count = Number.isFinite(parsedCount) && parsedCount >= 1 && parsedCount <= 999
+    ? clampCount(parsedCount)
+    : DEFAULT_SETTINGS.count;
+
+  return {
+    mode,
+    count,
+    reload: DEFAULT_SETTINGS.reload
+  };
 }
 
 async function saveSettings(settings) {
@@ -519,19 +532,28 @@ async function run() {
 async function init() {
   LoadingManager.init();
 
-  const settings = await loadSettings();
+  let settings = DEFAULT_SETTINGS;
+  try {
+    settings = await loadSettings();
+  } catch (_) {
+    setStatus("Could not load settings. Using defaults.");
+  }
   applySettingsToForm(settings);
 
   // Save settings immediately when changed
   modeInputs.forEach((input) => {
     input.addEventListener("change", () => {
       updateCountDisabled(input.value);
-      saveSettings(readSettingsFromForm());
+      saveSettings(readSettingsFromForm()).catch(() => {
+        setStatus("Could not save settings.");
+      });
     });
   });
 
   countInput.addEventListener("input", () => {
-    saveSettings(readSettingsFromForm());
+    saveSettings(readSettingsFromForm()).catch(() => {
+      setStatus("Could not save settings.");
+    });
   });
 
   runButton.addEventListener("click", run);
