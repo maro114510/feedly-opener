@@ -26,6 +26,62 @@ function showLoading(text) { loading.classList.add("active"); loadingText.textCo
 function hideLoading() { loading.classList.remove("active"); runButton.disabled = false; }
 function settingsFromForm() { return { mode: modeInputs.find((input) => input.checked)?.value || "count", count: clampCount(Number.parseInt(countInput.value, 10)), reload: true }; }
 function applySettings(settings) { modeInputs.forEach((input) => { input.checked = input.value === settings.mode; }); countInput.value = settings.count; countInput.disabled = settings.mode !== "count"; }
+function normalizeDestinationUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) return null;
+    return url.toString();
+  } catch (_) { return null; }
+}
+function normalizeTargets(response) {
+  const candidates = Array.isArray(response?.targets) ? response.targets : [];
+  const targets = [];
+  let invalidCount = 0;
+  for (const candidate of candidates) {
+    const url = normalizeDestinationUrl(candidate?.url);
+    if (!candidate || typeof candidate.id !== "string" || !candidate.id.trim() || !url) { invalidCount += 1; continue; }
+    targets.push({ id: candidate.id, url });
+  }
+  return { targets, invalidCount };
+}
+function createTabLoadTracker() {
+  const outcomes = new Map();
+  const waiters = new Map();
+  const timers = new Set();
+  const record = (tabId, result) => {
+    if (outcomes.has(tabId)) return;
+    outcomes.set(tabId, result);
+    const waiter = waiters.get(tabId);
+    if (waiter) { waiters.delete(tabId); waiter(result); }
+  };
+  const onUpdated = (tabId, changeInfo) => { if (changeInfo.status === "complete") record(tabId, { ok: true }); };
+  const onRemoved = (tabId) => record(tabId, { ok: false, reason: "Tab was closed before loading completed" });
+  const onDOMContentLoaded = (details) => { if (details.frameId === 0) record(details.tabId, { ok: true }); };
+  const onErrorOccurred = (details) => { if (details.frameId === 0) record(details.tabId, { ok: false, reason: details.error || "Navigation failed" }); };
+  api.tabs.onUpdated.addListener(onUpdated);
+  api.tabs.onRemoved.addListener(onRemoved);
+  api.webNavigation?.onDOMContentLoaded?.addListener(onDOMContentLoaded);
+  api.webNavigation?.onErrorOccurred?.addListener(onErrorOccurred);
+  return {
+    wait(tab) {
+      if (!Number.isInteger(tab?.id)) return Promise.resolve({ ok: false, reason: "No tab ID" });
+      if (tab.status === "complete") record(tab.id, { ok: true });
+      if (outcomes.has(tab.id)) return Promise.resolve(outcomes.get(tab.id));
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => { timers.delete(timer); record(tab.id, { ok: false, reason: "Tab loading timed out" }); }, 30000);
+        timers.add(timer);
+        waiters.set(tab.id, (result) => { clearTimeout(timer); timers.delete(timer); resolve(result); });
+      });
+    },
+    dispose() {
+      api.tabs.onUpdated.removeListener(onUpdated); api.tabs.onRemoved.removeListener(onRemoved);
+      api.webNavigation?.onDOMContentLoaded?.removeListener(onDOMContentLoaded);
+      api.webNavigation?.onErrorOccurred?.removeListener(onErrorOccurred);
+      timers.forEach(clearTimeout);
+    }
+  };
+}
 async function loadSettings() {
   const result = await callApi(storageArea.get, SETTINGS_KEY);
   const stored = result?.[SETTINGS_KEY] || DEFAULT_SETTINGS;

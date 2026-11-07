@@ -945,6 +945,10 @@ async function handleOpen(settings) {
  * @returns {Promise<Object>} Result object
  */
 async function handleUnsave(opId, verifiedTargetIds) {
+  if (Array.isArray(opId)) {
+    verifiedTargetIds = opId;
+    opId = pendingUnsave?.opId;
+  }
   if (!pendingUnsave) {
     return { ok: false, error: "No pending unsave state" };
   }
