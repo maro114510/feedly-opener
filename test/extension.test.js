@@ -72,7 +72,7 @@ function loadContent() {
     getComputedStyle: () => ({ overflowY: "visible" }),
     setTimeout, clearTimeout
   };
-  vm.runInNewContext(`${contentSource}\n;globalThis.__test = { parseEntryItems, toOpenableUrl, validateSettings, handleOpen, handleUnsave, setPending(value) { pendingUnsave = value; } };`, context);
+  vm.runInNewContext(`${contentSource}\n;globalThis.__test = { parseEntryItems, normalizeEntryUrl, validateSettings, handleOpen };`, context);
   return { api, exported: context.__test };
 }
 
@@ -146,7 +146,7 @@ test("content input helpers parse HTTP entries and normalize settings", () => {
     { id: "one", alternate: [{ href: "https://example.com/one" }] },
     { id: "two", canonicalUrl: "javascript:bad" }
   ]).map(({ id, url }) => ({ id, url })), [{ id: "one", url: "https://example.com/one" }]);
-  assert.equal(exported.toOpenableUrl("mailto:user@example.com"), null);
+  assert.equal(exported.normalizeEntryUrl("mailto:user@example.com"), null);
   assertJsonEqual(exported.validateSettings({ mode: "count", count: 5000, reload: false }),
     { mode: "count", count: 999, reload: false });
 });

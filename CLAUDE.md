@@ -42,11 +42,11 @@ Runs in the popup window. Reads settings from `browser.storage.sync` (falls back
 **`content.js` (execution engine)**
 Injected into `feedly.com` Read Later pages. Handles the actual fetch-and-unsave logic. Listens for `FEEDLY_OPEN` messages that validate the sender, sanitize settings, and run `handleOpen()` to cache targets in `pendingUnsave`. It also listens for `FEEDLY_UNSAVE`, which runs `handleUnsave()` to perform the cached unsave and optional reload.
 
-### API-first with DOM fallback
+### API-only operation
 
-`handleOpen()` always tries the Feedly API first (`handleOpenViaAPI`). If the API call fails for any reason, it falls back to DOM manipulation (`handleOpenViaDOM`).
+`handleOpen()` uses the Feedly API (`handleOpenViaAPI`) for both opening and unsaving. If the API is unavailable, it returns the API's user-facing error and does not create pending targets.
 
-**Why**: The API is reliable and fast, especially for "all" mode which pages through results. The DOM fallback exists because the token source (`localStorage["feedly.session"].feedlyToken`) is an undocumented internal Feedly detail that may silently become unavailable.
+**Why**: The API is reliable and fast, especially for "all" mode which pages through results. Refusing to fall back avoids risking an incorrect unsave when the token source (`localStorage["feedly.session"].feedlyToken`) is unavailable.
 
 **Token extraction**: The access token is read from `localStorage["feedly.session"]` — a key that Feedly's own web app writes. This is intentionally undocumented and may break if Feedly changes its session storage format. The token is cached in memory with a 10-minute TTL and a hash of the localStorage value for change detection.
 
@@ -66,18 +66,6 @@ Feedly is a React SPA. The browser only fires content script injection on full p
 - A 3-second "recently seen" cache (`READ_LATER_CACHE_MS`): if the script has confirmed the Read Later page within the last 3 seconds, it trusts that state.
 - A fallback re-injection via `scripting.executeScript` when the popup can't reach the content script.
 - A `window.__feedlyReadLaterOpenerListenerAdded` guard to prevent duplicate `runtime.onMessage` listeners when the script is injected multiple times.
-
-### DOM selector fragility
-
-The DOM fallback detects saved items by heuristics tied to Feedly's current UI:
-
-- SVG `path[d]` values: `BOOKMARK_ICON_SELECTED_PATH = "M13.077 2.5H6.923"` and `BOOKMARK_ICON_UNSELECTED_PATH = "M13 2.357H7"` — these are extracted from observed Feedly UI and will break if Feedly updates their icon set.
-- CSS class name fragments: `color--accent`, `color--secondary`, `EntryMetadataReadLater`, `EntryToolbar__button`
-- Multi-label support for Read Later text (`READ_LATER_LABELS`) includes Japanese labels (`後で読む`, `あとで読む`) because Feedly localizes button text.
-
-When Feedly pushes a UI update, it is the DOM selectors and SVG paths that break first. Fix by inspecting the Feedly page in DevTools and updating the relevant constants in `content.js`.
-
-`clickElement()` dispatches a full mouse event sequence (`mouseover → pointerdown → mousedown → pointerup → mouseup → click`) rather than just calling `.click()` because Feedly's React event system requires the full event bubbling chain to register the interaction.
 
 ## Message protocol
 
