@@ -28,3 +28,6 @@ jobs:
           test -f README.md
           test -f LICENSE
           test -f content.js
+
+      - name: Run automated tests
+        run: node --test
