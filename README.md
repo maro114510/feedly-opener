@@ -39,6 +39,9 @@ Browser extension to open saved items from Feedly Read Later in background tabs 
 5. The popup waits for each destination tab to load before unsaving
 6. Verified items are removed from Read Later; failed or timed-out items remain saved
 
+Opening is limited to 10 loading tabs at a time. Runs over 50 items ask for confirmation,
+and a single run is limited to 200 items.
+
 ## Notes
 
 - Feedly is a SPA, so content scripts may not be injected immediately after navigation. The extension attempts a fallback injection.

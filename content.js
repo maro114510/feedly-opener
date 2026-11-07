@@ -90,6 +90,7 @@ const READ_LATER_LABELS = ["read later", "後で読む", "あとで読む"];
 const PAGE_SIZE = 100;
 const MAX_PAGINATION_PAGES = 1000;
 const MAX_CONTINUATION_LENGTH = 4096;
+const MAX_ITEMS_PER_RUN = 200;
 
 const SavedState = Object.freeze({
   SAVED: "saved",
@@ -111,7 +112,7 @@ function delay(ms) {
  * @returns {number} Normalized count (minimum 1)
  */
 function normalizeCount(count) {
-  return Math.max(count || 1, 1);
+  return Math.min(Math.max(count || 1, 1), MAX_ITEMS_PER_RUN);
 }
 
 // =============================================================================
@@ -476,10 +477,11 @@ async function handleOpenViaAPI(settings) {
     };
   }
 
-  // Limit entries based on settings (only needed for "count" mode as safeguard)
-  const entriesToProcess = settings.mode === "count"
-    ? entries.slice(0, normalizeCount(settings.count))
-    : entries;
+  // Limit entries based on settings and enforce the hard per-run cap.
+  const entriesToProcess = entries.slice(
+    0,
+    settings.mode === "count" ? normalizeCount(settings.count) : MAX_ITEMS_PER_RUN
+  );
   const targets = entriesToProcess.map((entry) => ({
     id: String(entry.id),
     url: entry.url
